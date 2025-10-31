@@ -3770,7 +3770,7 @@ struct ggml_tensor * ggml_set_rows(
     result->op     = GGML_OP_SET_ROWS;
     result->src[0] = b;
     result->src[1] = c;
-    result->src[2] = a; // note: order is weird due to legacy reasons (https://github.com/ggml-org/llama.cpp/pull/16063#discussion_r2385795931)
+    result->src[2] = a; // note: order is weird due to legacy reasons (https://github.com/ggml-org/gptoss.cpp/pull/16063#discussion_r2385795931)
 
     return result;
 }
@@ -6214,7 +6214,7 @@ static void ggml_compute_backward(
                         //         ggml_transpose(ctx, src0)), // [m,n,q1,r1]
                         //     grad),                          // [m,p,qq,rr]
 
-                        // when src0 is bigger than tensor->grad (this is mostly the case in llama),
+                        // when src0 is bigger than tensor->grad (this is mostly the case in gptoss),
                         // avoid transpose of src0, rather transpose smaller tensor->grad
                         // and then use ggml_out_prod
                         ggml_out_prod(ctx,      // [n,p,qq,rr]
@@ -6343,7 +6343,7 @@ static void ggml_compute_backward(
         case GGML_OP_DIAG_MASK_INF: {
             if (src0_needs_grads) {
                 /* ggml_diag_mask_inf_impl() shouldn't be here */
-                /* ref:  https://github.com/ggerganov/llama.cpp/pull/4203#discussion_r1412377992 */
+                /* ref:  https://github.com/ggerganov/gptoss.cpp/pull/4203#discussion_r1412377992 */
                 const int n_past = ((const int32_t *) tensor->op_params)[0];
                 ggml_add_or_set(ctx, cgraph, isrc0, ggml_diag_mask_zero_impl(ctx, grad, n_past, false));
             }

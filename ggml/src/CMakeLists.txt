@@ -286,7 +286,7 @@ endfunction()
 
 function(ggml_add_cpu_backend_variant tag_name)
     set(GGML_CPU_TAG_NAME ${tag_name})
-    # other: OPENMP LLAMAFILE CPU_HBM
+    # other: OPENMP GPTOSSFILE CPU_HBM
     if (GGML_SYSTEM_ARCH STREQUAL "x86")
         foreach (feat NATIVE
                       SSE42
