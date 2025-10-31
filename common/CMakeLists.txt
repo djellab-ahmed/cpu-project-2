@@ -2,7 +2,7 @@
 
 find_package(Threads REQUIRED)
 
-llama_add_compile_flags()
+gptoss_add_compile_flags()
 
 # Build info header
 #
@@ -77,20 +77,20 @@ if (BUILD_SHARED_LIBS)
     set_target_properties(${TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-set(LLAMA_COMMON_EXTRA_LIBS build_info)
+set(GPTOSS_COMMON_EXTRA_LIBS build_info)
 
 # Use curl to download model url
-if (LLAMA_CURL)
+if (GPTOSS_CURL)
     find_package(CURL)
     if (NOT CURL_FOUND)
-        message(FATAL_ERROR "Could NOT find CURL. Hint: to disable this feature, set -DLLAMA_CURL=OFF")
+        message(FATAL_ERROR "Could NOT find CURL. Hint: to disable this feature, set -DGPTOSS_CURL=OFF")
     endif()
-    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_CURL)
+    target_compile_definitions(${TARGET} PUBLIC GPTOSS_USE_CURL)
     include_directories(${CURL_INCLUDE_DIRS})
-    set(LLAMA_COMMON_EXTRA_LIBS ${LLAMA_COMMON_EXTRA_LIBS} ${CURL_LIBRARIES})
+    set(GPTOSS_COMMON_EXTRA_LIBS ${GPTOSS_COMMON_EXTRA_LIBS} ${CURL_LIBRARIES})
 endif()
 
-if (LLAMA_OPENSSL)
+if (GPTOSS_OPENSSL)
     find_package(OpenSSL)
     if (OpenSSL_FOUND)
         include(CheckCSourceCompiles)
@@ -126,7 +126,7 @@ if (LLAMA_OPENSSL)
     endif()
 endif()
 
-if (LLAMA_LLGUIDANCE)
+if (GPTOSS_LLGUIDANCE)
     include(ExternalProject)
     set(LLGUIDANCE_SRC ${CMAKE_BINARY_DIR}/llguidance/source)
     set(LLGUIDANCE_PATH ${LLGUIDANCE_SRC}/target/release)
@@ -159,7 +159,7 @@ if (LLAMA_LLGUIDANCE)
         BUILD_BYPRODUCTS ${LLGUIDANCE_PATH}/${LLGUIDANCE_LIB_NAME} ${LLGUIDANCE_PATH}/llguidance.h
         UPDATE_COMMAND ""
     )
-    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_LLGUIDANCE)
+    target_compile_definitions(${TARGET} PUBLIC GPTOSS_USE_LLGUIDANCE)
 
     add_library(llguidance STATIC IMPORTED)
     set_target_properties(llguidance PROPERTIES IMPORTED_LOCATION ${LLGUIDANCE_PATH}/${LLGUIDANCE_LIB_NAME})
@@ -167,12 +167,12 @@ if (LLAMA_LLGUIDANCE)
 
     target_include_directories(${TARGET} PRIVATE ${LLGUIDANCE_PATH})
     # Add platform libraries to the main target
-    set(LLAMA_COMMON_EXTRA_LIBS ${LLAMA_COMMON_EXTRA_LIBS} llguidance ${LLGUIDANCE_PLATFORM_LIBS})
+    set(GPTOSS_COMMON_EXTRA_LIBS ${GPTOSS_COMMON_EXTRA_LIBS} llguidance ${LLGUIDANCE_PLATFORM_LIBS})
 endif ()
 
 target_include_directories(${TARGET} PUBLIC . ../vendor)
 target_compile_features   (${TARGET} PUBLIC cxx_std_17)
-target_link_libraries     (${TARGET} PRIVATE ${LLAMA_COMMON_EXTRA_LIBS} PUBLIC llama Threads::Threads)
+target_link_libraries     (${TARGET} PRIVATE ${GPTOSS_COMMON_EXTRA_LIBS} PUBLIC gptoss Threads::Threads)
 
 
 #
@@ -192,7 +192,7 @@ if (DEFINED ENV{GITHUB_ACTIONS} AND "$ENV{GITHUB_ACTIONS}" STREQUAL "true")
             TARGET ${TARGET}
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${LICENSE_FILE}"
-                "$<TARGET_FILE_DIR:llama>/${FILENAME}"
+                "$<TARGET_FILE_DIR:gptoss>/${FILENAME}"
             COMMENT "Copying ${FILENAME} to ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
         message(STATUS "Copying ${LICENSE_FILE} to ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${FILENAME}")
     endforeach()
