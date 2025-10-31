@@ -965,7 +965,7 @@ inline static ggml_fp16_t ggml_silu_f16(ggml_fp16_t x) {
 
 #if __FINITE_MATH_ONLY__
 #error "some routines in ggml.c require non-finite math arithmetics -- pass -fno-finite-math-only to the compiler to fix"
-#error "ref: https://github.com/ggml-org/llama.cpp/pull/7154#issuecomment-2143844461"
+#error "ref: https://github.com/ggml-org/gptoss.cpp/pull/7154#issuecomment-2143844461"
 #endif
 
 /* Below function was borrowed from the GitHub repository:

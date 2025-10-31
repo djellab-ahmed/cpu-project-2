@@ -67,7 +67,7 @@
 #define ggml_gemm_q4_0_4x8_q8_0_generic ggml_gemm_q4_0_4x8_q8_0
 #define ggml_gemm_iq4_nl_4x4_q8_0_generic ggml_gemm_iq4_nl_4x4_q8_0
 #elif defined(__POWERPC__) || defined(__powerpc__)
-// ref: https://github.com/ggml-org/llama.cpp/pull/14146#issuecomment-2972561679
+// ref: https://github.com/ggml-org/gptoss.cpp/pull/14146#issuecomment-2972561679
 // quants.c
 #define quantize_row_q8_K_generic quantize_row_q8_K
 #define ggml_vec_dot_tq1_0_q8_K_generic ggml_vec_dot_tq1_0_q8_K

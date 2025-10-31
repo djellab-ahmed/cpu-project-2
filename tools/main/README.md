@@ -1,6 +1,6 @@
-# llama.cpp/tools/main
+# gptoss.cpp/tools/main
 
-This example program allows you to use various LLaMA language models easily and efficiently. It is specifically designed to work with the [llama.cpp](https://github.com/ggml-org/llama.cpp) project, which provides a plain C/C++ implementation with optional 4-bit quantization support for faster, lower memory inference, and is optimized for desktop CPUs. This program can be used to perform various inference tasks with LLaMA models, including generating text based on user-provided prompts and chat-like interactions with reverse prompts.
+This example program allows you to use various GptOss language models easily and efficiently. It is specifically designed to work with the [gptoss.cpp](https://github.com/ggml-org/gptoss.cpp) project, which provides a plain C/C++ implementation with optional 4-bit quantization support for faster, lower memory inference, and is optimized for desktop CPUs. This program can be used to perform various inference tasks with GptOss models, including generating text based on user-provided prompts and chat-like interactions with reverse prompts.
 
 ## Table of Contents
 
@@ -20,84 +20,84 @@ To get started right away, run the following command, making sure to use the cor
 First, we will need to download a model. In these examples, we will use the Gemma model from the ggml-org repo on Hugging Face.
 [https://huggingface.co/ggml-org/gemma-1.1-7b-it-Q4_K_M-GGUF/resolve/main/gemma-1.1-7b-it.Q4_K_M.gguf?download=true](https://huggingface.co/ggml-org/gemma-1.1-7b-it-Q4_K_M-GGUF/resolve/main/gemma-1.1-7b-it.Q4_K_M.gguf?download=true)
 
-Once downloaded, place your model in the models folder in llama.cpp.
+Once downloaded, place your model in the models folder in gptoss.cpp.
 
 ### Unix-based systems (Linux, macOS, etc.):
 
 ##### Input prompt (One-and-done)
 
 ```bash
-./llama-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf -no-cnv --prompt "Once upon a time"
+./gptoss-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf -no-cnv --prompt "Once upon a time"
 ```
 ##### Conversation mode (Allow for continuous interaction with the model)
 
 ```bash
-./llama-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --chat-template gemma
+./gptoss-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --chat-template gemma
 ```
 
 ##### Conversation mode using built-in jinja chat template
 
 ```bash
-./llama-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --jinja
+./gptoss-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --jinja
 ```
 
 ##### One-and-done query using jinja with custom system prompt and a starting prompt
 
 ```bash
-./llama-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --jinja --single-turn -sys "You are a helpful assistant" -p "Hello"
+./gptoss-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --jinja --single-turn -sys "You are a helpful assistant" -p "Hello"
 ```
 
 ##### Infinite text from a starting prompt (you can use `Ctrl-C` to stop it):
 ```bash
-./llama-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
+./gptoss-cli -m models/gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
 ```
 
 ### Windows:
 
 ##### Input prompt (One-and-done)
 ```powershell
-./llama-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf -no-cnv --prompt "Once upon a time"
+./gptoss-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf -no-cnv --prompt "Once upon a time"
 ```
 ##### Conversation mode (Allow for continuous interaction with the model)
 
 ```powershell
-./llama-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --chat-template gemma
+./gptoss-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --chat-template gemma
 ```
 
 ##### Conversation mode using built-in jinja chat template
 
 ```powershell
-./llama-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --jinja
+./gptoss-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --jinja
 ```
 
 ##### One-and-done query using jinja with custom system prompt and a starting prompt
 
 ```powershell
-./llama-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --jinja --single-turn -sys "You are a helpful assistant" -p "Hello"
+./gptoss-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --jinja --single-turn -sys "You are a helpful assistant" -p "Hello"
 ```
 
 #### Infinite text from a starting prompt (you can use `Ctrl-C` to stop it):
 
 ```powershell
-llama-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
+gptoss-cli.exe -m models\gemma-1.1-7b-it.Q4_K_M.gguf --ignore-eos -n -1
 ```
 
 ## Common Options
 
-In this section, we cover the most commonly used options for running the `llama-cli` program with the LLaMA models:
+In this section, we cover the most commonly used options for running the `gptoss-cli` program with the GptOss models:
 
--   `-m FNAME, --model FNAME`: Specify the path to the LLaMA model file (e.g., `models/gemma-1.1-7b-it.Q4_K_M.gguf`; inferred from `--model-url` if set).
+-   `-m FNAME, --model FNAME`: Specify the path to the GptOss model file (e.g., `models/gemma-1.1-7b-it.Q4_K_M.gguf`; inferred from `--model-url` if set).
 -   `-mu MODEL_URL --model-url MODEL_URL`: Specify a remote http url to download the file (e.g [https://huggingface.co/ggml-org/gemma-1.1-7b-it-Q4_K_M-GGUF/resolve/main/gemma-1.1-7b-it.Q4_K_M.gguf?download=true](https://huggingface.co/ggml-org/gemma-1.1-7b-it-Q4_K_M-GGUF/resolve/main/gemma-1.1-7b-it.Q4_K_M.gguf?download=true)).
 -   `-i, --interactive`: Run the program in interactive mode, allowing you to provide input directly and receive real-time responses.
 -   `-n N, --n-predict N`: Set the number of tokens to predict when generating text. Adjusting this value can influence the length of the generated text.
--   `-c N, --ctx-size N`: Set the size of the prompt context. The default is 4096, but if a LLaMA model was built with a longer context, increasing this value will provide better results for longer input/inference.
+-   `-c N, --ctx-size N`: Set the size of the prompt context. The default is 4096, but if a GptOss model was built with a longer context, increasing this value will provide better results for longer input/inference.
 -   `-mli, --multiline-input`: Allows you to write or paste multiple lines without ending each in '\'
 -   `-t N, --threads N`: Set the number of threads to use during generation. For optimal performance, it is recommended to set this value to the number of physical CPU cores your system has.
 -   `-ngl N, --n-gpu-layers N`: When compiled with GPU support, this option allows offloading some layers to the GPU for computation. Generally results in increased performance.
 
 ## Input Prompts
 
-The `llama-cli` program provides several ways to interact with the LLaMA models using input prompts:
+The `gptoss-cli` program provides several ways to interact with the GptOss models using input prompts:
 
 -   `--prompt PROMPT`: Provide a prompt directly as a command-line option.
 -   `--file FNAME`: Provide a file containing a prompt or multiple prompts.
@@ -107,9 +107,9 @@ The `llama-cli` program provides several ways to interact with the LLaMA models 
 
 ## Interaction
 
-The `llama-cli` program offers a seamless way to interact with LLaMA models, allowing users to engage in real-time conversations or provide instructions for specific tasks. The interactive mode can be triggered using various options, including `--interactive` and `--interactive-first`.
+The `gptoss-cli` program offers a seamless way to interact with GptOss models, allowing users to engage in real-time conversations or provide instructions for specific tasks. The interactive mode can be triggered using various options, including `--interactive` and `--interactive-first`.
 
-In interactive mode, users can participate in text generation by injecting their input during the process. Users can press `Ctrl+C` at any time to interject and type their input, followed by pressing `Return` to submit it to the LLaMA model. To submit additional lines without finalizing input, users can end the current line with a backslash (`\`) and continue typing.
+In interactive mode, users can participate in text generation by injecting their input during the process. Users can press `Ctrl+C` at any time to interject and type their input, followed by pressing `Return` to submit it to the GptOss model. To submit additional lines without finalizing input, users can end the current line with a backslash (`\`) and continue typing.
 
 ### Interaction Options
 
@@ -121,11 +121,11 @@ In interactive mode, users can participate in text generation by injecting their
 -   `--jinja`:  Enable jinja chat template parser, will use the model's built-in template or a user-provided one (default: false)
 -   `--color`: Enable colorized output to differentiate visually distinguishing between prompts, user input, and generated text.
 
-By understanding and utilizing these interaction options, you can create engaging and dynamic experiences with the LLaMA models, tailoring the text generation process to your specific needs.
+By understanding and utilizing these interaction options, you can create engaging and dynamic experiences with the GptOss models, tailoring the text generation process to your specific needs.
 
 ### Reverse Prompts
 
-Reverse prompts are a powerful way to create a chat-like experience with a LLaMA model by pausing the text generation when specific text strings are encountered:
+Reverse prompts are a powerful way to create a chat-like experience with a GptOss model by pausing the text generation when specific text strings are encountered:
 
 -   `-r PROMPT, --reverse-prompt PROMPT`: Specify one or multiple reverse prompts to pause text generation and switch to interactive mode. For example, `-r "User:"` can be used to jump back into the conversation whenever it's the user's turn to speak. This helps create a more interactive and conversational experience. However, the reverse prompt doesn't work when it ends with a space.
 
@@ -136,7 +136,7 @@ To overcome this limitation, you can use the `--in-prefix` flag to add a space o
 The `--in-prefix` flag is used to add a prefix to your input, primarily, this is used to insert a space after the reverse prompt. Here's an example of how to use the `--in-prefix` flag in conjunction with the `--reverse-prompt` flag:
 
 ```sh
-./llama-cli -r "User:" --in-prefix " "
+./gptoss-cli -r "User:" --in-prefix " "
 ```
 
 ### In-Suffix
@@ -144,13 +144,13 @@ The `--in-prefix` flag is used to add a prefix to your input, primarily, this is
 The `--in-suffix` flag is used to add a suffix after your input. This is useful for adding an "Assistant:" prompt after the user's input. It's added after the new-line character (`\n`) that's automatically added to the end of the user's input. Here's an example of how to use the `--in-suffix` flag in conjunction with the `--reverse-prompt` flag:
 
 ```sh
-./llama-cli -r "User:" --in-prefix " " --in-suffix "Assistant:"
+./gptoss-cli -r "User:" --in-prefix " " --in-suffix "Assistant:"
 ```
 When --in-prefix or --in-suffix options are enabled the chat template ( --chat-template ) is disabled
 
 ### Chat templates
 
- `--chat-template JINJA_TEMPLATE`: This option sets a custom jinja chat template. It accepts a string, not a file name.  Default: template taken from model's metadata. Llama.cpp only supports [some pre-defined templates](https://github.com/ggml-org/llama.cpp/wiki/Templates-supported-by-llama_chat_apply_template). These include llama2, llama3, gemma, monarch, chatml, orion, vicuna, vicuna-orca, deepseek, command-r, zephyr. When --in-prefix or --in-suffix options are enabled the chat template ( --chat-template ) is disabled.
+ `--chat-template JINJA_TEMPLATE`: This option sets a custom jinja chat template. It accepts a string, not a file name.  Default: template taken from model's metadata. Gptoss.cpp only supports [some pre-defined templates](https://github.com/ggml-org/gptoss.cpp/wiki/Templates-supported-by-gptoss_chat_apply_template). These include gptoss2, gptoss3, gemma, monarch, chatml, orion, vicuna, vicuna-orca, deepseek, command-r, zephyr. When --in-prefix or --in-suffix options are enabled the chat template ( --chat-template ) is disabled.
 
  Example usage: `--chat-template gemma`
 
@@ -158,11 +158,11 @@ When --in-prefix or --in-suffix options are enabled the chat template ( --chat-t
 
 ## Context Management
 
-During text generation, LLaMA models have a limited context size, which means they can only consider a certain number of tokens from the input and generated text. When the context fills up, the model resets internally, potentially losing some information from the beginning of the conversation or instructions. Context management options help maintain continuity and coherence in these situations.
+During text generation, GptOss models have a limited context size, which means they can only consider a certain number of tokens from the input and generated text. When the context fills up, the model resets internally, potentially losing some information from the beginning of the conversation or instructions. Context management options help maintain continuity and coherence in these situations.
 
 ### Context Size
 
-- `-c N, --ctx-size N`: Set the size of the prompt context (default: 4096, 0 = loaded from model). If a LLaMA model was built with a longer context, increasing this value will yield the best results on longer input/inference.
+- `-c N, --ctx-size N`: Set the size of the prompt context (default: 4096, 0 = loaded from model). If a GptOss model was built with a longer context, increasing this value will yield the best results on longer input/inference.
 
 ### Extended Context Size
 
@@ -176,7 +176,7 @@ The `--keep` option allows users to retain the original prompt when the model ru
 
 -   `--keep N`: Specify the number of tokens from the initial prompt to retain when the model resets its internal context. By default, this value is set to 0 (meaning no tokens are kept). Use `-1` to retain all tokens from the initial prompt.
 
-By utilizing context management options like `--ctx-size` and `--keep`, you can maintain a more coherent and consistent interaction with the LLaMA models, ensuring that the generated text remains relevant to the original prompt or conversation.
+By utilizing context management options like `--ctx-size` and `--keep`, you can maintain a more coherent and consistent interaction with the GptOss models, ensuring that the generated text remains relevant to the original prompt or conversation.
 
 ## Generation Flags
 
@@ -312,7 +312,7 @@ The logit bias option allows you to manually adjust the likelihood of specific t
 
 For example, use `--logit-bias 15043+1` to increase the likelihood of the token 'Hello', or `--logit-bias 15043-1` to decrease its likelihood. Using a value of negative infinity, `--logit-bias 15043-inf` ensures that the token `Hello` is never produced.
 
-A more practical use case might be to prevent the generation of `\code{begin}` and `\code{end}` by setting the `\` token (29905) to negative infinity with `-l 29905-inf`. (This is due to the prevalence of LaTeX codes that show up in LLaMA model inference.)
+A more practical use case might be to prevent the generation of `\code{begin}` and `\code{end}` by setting the `\` token (29905) to negative infinity with `-l 29905-inf`. (This is due to the prevalence of LaTeX codes that show up in GptOss model inference.)
 
 Example usage: `--logit-bias 29905-inf`
 
@@ -324,7 +324,7 @@ The RNG seed is used to initialize the random number generator that influences t
 
 ## Performance Tuning and Memory Options
 
-These options help improve the performance and memory usage of the LLaMA models. By adjusting these settings, you can fine-tune the model's behavior to better suit your system's capabilities and achieve optimal performance for your specific use case.
+These options help improve the performance and memory usage of the GptOss models. By adjusting these settings, you can fine-tune the model's behavior to better suit your system's capabilities and achieve optimal performance for your specific use case.
 
 ### Number of Threads
 
@@ -365,7 +365,7 @@ These options help improve the performance and memory usage of the LLaMA models.
 
 ### Quantization
 
-For information about 4-bit quantization, which can significantly improve performance and reduce memory usage, please refer to llama.cpp's primary [README](../../README.md#prepare-and-quantize).
+For information about 4-bit quantization, which can significantly improve performance and reduce memory usage, please refer to gptoss.cpp's primary [README](../../README.md#prepare-and-quantize).
 
 ## LoRA (Low-Rank Adaptation) adapters
 
@@ -378,11 +378,11 @@ LoRA adapters should be in GGUF format. To convert from Hugging Face format use 
 
 ## Additional Options
 
-These options provide extra functionality and customization when running the LLaMA models:
+These options provide extra functionality and customization when running the GptOss models:
 
 -   `-h, --help`: Display a help message showing all available options and their default values. This is particularly useful for checking the latest options and default values, as they can change frequently, and the information in this document may become outdated.
 -   `--verbose-prompt`: Print the prompt before generating text.
 -   `--no-display-prompt`: Don't print prompt at generation.
 -   `-mg i, --main-gpu i`: When using multiple GPUs this option controls which GPU is used for small tensors for which the overhead of splitting the computation across all GPUs is not worthwhile. The GPU in question will use slightly more VRAM to store a scratch buffer for temporary results. By default GPU 0 is used.
 -   `-ts SPLIT, --tensor-split SPLIT`: When using multiple devices this option controls how tensors should be split across devices. `SPLIT` is a comma-separated list of non-negative values that assigns the proportion of data that each device should get in order. For example, "3,2" will assign 60% of the data to device 0 and 40% to device 1. By default, the data is split in proportion to VRAM, but this may not be optimal for performance. The list of the devices which are being used is printed on startup and can be different from the device list given by `--list-devices` or e.g. `nvidia-smi`.
--   `-hfr URL --hf-repo URL`: The url to the Hugging Face model repository. Used in conjunction with `--hf-file` or `-hff`. The model is downloaded and stored in the file provided by `-m` or `--model`. If `-m` is not provided, the model is auto-stored in the path specified by the `LLAMA_CACHE` environment variable  or in an OS-specific local cache.
+-   `-hfr URL --hf-repo URL`: The url to the Hugging Face model repository. Used in conjunction with `--hf-file` or `-hff`. The model is downloaded and stored in the file provided by `-m` or `--model`. If `-m` is not provided, the model is auto-stored in the path specified by the `GPTOSS_CACHE` environment variable  or in an OS-specific local cache.
