@@ -2,7 +2,7 @@
 
 find_package(Threads REQUIRED)
 
-llama_add_compile_flags()
+gptoss_add_compile_flags()
 
 # Build info header
 #
@@ -56,7 +56,6 @@ add_library(${TARGET} STATIC
     common.h
     console.cpp
     console.h
-    http.h
     json-partial.cpp
     json-partial.h
     json-schema-to-grammar.cpp
@@ -77,56 +76,14 @@ if (BUILD_SHARED_LIBS)
     set_target_properties(${TARGET} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
-set(LLAMA_COMMON_EXTRA_LIBS build_info)
+set(GPTOSS_COMMON_EXTRA_LIBS build_info)
 
-# Use curl to download model url
-if (LLAMA_CURL)
-    find_package(CURL)
-    if (NOT CURL_FOUND)
-        message(FATAL_ERROR "Could NOT find CURL. Hint: to disable this feature, set -DLLAMA_CURL=OFF")
-    endif()
-    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_CURL)
-    include_directories(${CURL_INCLUDE_DIRS})
-    set(LLAMA_COMMON_EXTRA_LIBS ${LLAMA_COMMON_EXTRA_LIBS} ${CURL_LIBRARIES})
-endif()
+# libcurl is required for model downloads (the cpp-httplib fallback was removed)
+find_package(CURL REQUIRED)
+target_include_directories(${TARGET} PUBLIC ${CURL_INCLUDE_DIRS})
+list(APPEND GPTOSS_COMMON_EXTRA_LIBS ${CURL_LIBRARIES})
 
-if (LLAMA_OPENSSL)
-    find_package(OpenSSL)
-    if (OpenSSL_FOUND)
-        include(CheckCSourceCompiles)
-        set(SAVED_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
-        set(CMAKE_REQUIRED_INCLUDES ${OPENSSL_INCLUDE_DIR})
-        check_c_source_compiles("
-        #include <openssl/opensslv.h>
-        #if defined(OPENSSL_IS_BORINGSSL) || defined(LIBRESSL_VERSION_NUMBER)
-        #    if OPENSSL_VERSION_NUMBER < 0x1010107f
-        #        error bad version
-        #    endif
-        #else
-        #    if OPENSSL_VERSION_NUMBER < 0x30000000L
-        #        error bad version
-        #    endif
-        #endif
-        int main() { return 0; }
-        " OPENSSL_VERSION_SUPPORTED)
-        set(CMAKE_REQUIRED_INCLUDES ${SAVED_CMAKE_REQUIRED_INCLUDES})
-        if (OPENSSL_VERSION_SUPPORTED)
-            message(STATUS "OpenSSL found: ${OPENSSL_VERSION}")
-            target_compile_definitions(${TARGET} PUBLIC CPPHTTPLIB_OPENSSL_SUPPORT)
-            target_link_libraries(${TARGET} PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-            if (APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-                target_compile_definitions(${TARGET} PUBLIC CPPHTTPLIB_USE_CERTS_FROM_MACOSX_KEYCHAIN)
-                find_library(CORE_FOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
-                find_library(SECURITY_FRAMEWORK Security REQUIRED)
-                target_link_libraries(${TARGET} PUBLIC ${CORE_FOUNDATION_FRAMEWORK} ${SECURITY_FRAMEWORK})
-            endif()
-        endif()
-    else()
-        message(STATUS "OpenSSL not found, SSL support disabled")
-    endif()
-endif()
-
-if (LLAMA_LLGUIDANCE)
+if (GPTOSS_LLGUIDANCE)
     include(ExternalProject)
     set(LLGUIDANCE_SRC ${CMAKE_BINARY_DIR}/llguidance/source)
     set(LLGUIDANCE_PATH ${LLGUIDANCE_SRC}/target/release)
@@ -159,7 +116,7 @@ if (LLAMA_LLGUIDANCE)
         BUILD_BYPRODUCTS ${LLGUIDANCE_PATH}/${LLGUIDANCE_LIB_NAME} ${LLGUIDANCE_PATH}/llguidance.h
         UPDATE_COMMAND ""
     )
-    target_compile_definitions(${TARGET} PUBLIC LLAMA_USE_LLGUIDANCE)
+    target_compile_definitions(${TARGET} PUBLIC GPTOSS_USE_LLGUIDANCE)
 
     add_library(llguidance STATIC IMPORTED)
     set_target_properties(llguidance PROPERTIES IMPORTED_LOCATION ${LLGUIDANCE_PATH}/${LLGUIDANCE_LIB_NAME})
@@ -167,12 +124,12 @@ if (LLAMA_LLGUIDANCE)
 
     target_include_directories(${TARGET} PRIVATE ${LLGUIDANCE_PATH})
     # Add platform libraries to the main target
-    set(LLAMA_COMMON_EXTRA_LIBS ${LLAMA_COMMON_EXTRA_LIBS} llguidance ${LLGUIDANCE_PLATFORM_LIBS})
+    set(GPTOSS_COMMON_EXTRA_LIBS ${GPTOSS_COMMON_EXTRA_LIBS} llguidance ${LLGUIDANCE_PLATFORM_LIBS})
 endif ()
 
 target_include_directories(${TARGET} PUBLIC . ../vendor)
 target_compile_features   (${TARGET} PUBLIC cxx_std_17)
-target_link_libraries     (${TARGET} PRIVATE ${LLAMA_COMMON_EXTRA_LIBS} PUBLIC llama Threads::Threads)
+target_link_libraries     (${TARGET} PRIVATE ${GPTOSS_COMMON_EXTRA_LIBS} PUBLIC gptoss Threads::Threads)
 
 
 #
@@ -192,7 +149,7 @@ if (DEFINED ENV{GITHUB_ACTIONS} AND "$ENV{GITHUB_ACTIONS}" STREQUAL "true")
             TARGET ${TARGET}
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${LICENSE_FILE}"
-                "$<TARGET_FILE_DIR:llama>/${FILENAME}"
+                "$<TARGET_FILE_DIR:gptoss>/${FILENAME}"
             COMMENT "Copying ${FILENAME} to ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
         message(STATUS "Copying ${LICENSE_FILE} to ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${FILENAME}")
     endforeach()

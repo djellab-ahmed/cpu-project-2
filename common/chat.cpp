@@ -218,7 +218,7 @@ std::vector<common_chat_msg> common_chat_msgs_parse_oaicompat(const json & messa
                         msg.content_parts.push_back(msg_part);
                     }
                 } else if (!content.is_null()) {
-                    throw std::runtime_error("Invalid 'content' type: expected string or array, got " + content.dump() + " (ref: https://github.com/ggml-org/llama.cpp/issues/8367)");
+                    throw std::runtime_error("Invalid 'content' type: expected string or array, got " + content.dump() + " (ref: https://github.com/ggml-org/gptoss.cpp/issues/8367)");
                 }
             }
             if (has_tool_calls) {
@@ -247,7 +247,7 @@ std::vector<common_chat_msg> common_chat_msgs_parse_oaicompat(const json & messa
                 }
             }
             if (!has_content && !has_tool_calls) {
-                throw std::runtime_error("Expected 'content' or 'tool_calls' (ref: https://github.com/ggml-org/llama.cpp/issues/8367 & https://github.com/ggml-org/llama.cpp/issues/12279)");
+                throw std::runtime_error("Expected 'content' or 'tool_calls' (ref: https://github.com/ggml-org/gptoss.cpp/issues/8367 & https://github.com/ggml-org/gptoss.cpp/issues/12279)");
             }
             if (message.contains("reasoning_content")) {
                 msg.reasoning_content = message.at("reasoning_content");
@@ -450,8 +450,8 @@ bool common_chat_verify_template(const std::string & tmpl, bool use_jinja) {
             return false;
         }
     }
-    llama_chat_message chat[] = {{"user", "test"}};
-    const int res = llama_chat_apply_template(tmpl.c_str(), chat, 1, true, nullptr, 0);
+    gptoss_chat_message chat[] = {{"user", "test"}};
+    const int res = gptoss_chat_apply_template(tmpl.c_str(), chat, 1, true, nullptr, 0);
     return res >= 0;
 }
 
@@ -537,7 +537,7 @@ const char * common_chat_templates_source(const struct common_chat_templates * t
 }
 
 common_chat_templates_ptr common_chat_templates_init(
-    const struct llama_model * model,
+    const struct gptoss_model * model,
     const std::string & chat_template_override,
     const std::string & bos_token_override,
     const std::string & eos_token_override)
@@ -548,12 +548,12 @@ common_chat_templates_ptr common_chat_templates_init(
     bool has_explicit_template = !chat_template_override.empty();
     if (chat_template_override.empty()) {
         GGML_ASSERT(model != nullptr);
-        const auto * str = llama_model_chat_template(model, /* name */ nullptr);
+        const auto * str = gptoss_model_chat_template(model, /* name */ nullptr);
         if (str) {
             default_template_src = str;
             has_explicit_template = true;
         }
-        str = llama_model_chat_template(model, /* name */ "tool_use");
+        str = gptoss_model_chat_template(model, /* name */ "tool_use");
         if (str) {
             template_tool_use_src = str;
             has_explicit_template = true;
@@ -570,7 +570,7 @@ common_chat_templates_ptr common_chat_templates_init(
     }
 
     // TODO @ngxson : this is a temporary hack to prevent chat template from throwing an error
-    // Ref: https://github.com/ggml-org/llama.cpp/pull/15230#issuecomment-3173959633
+    // Ref: https://github.com/ggml-org/gptoss.cpp/pull/15230#issuecomment-3173959633
     if (default_template_src.find("<|channel|>") != std::string::npos
             // search for the error message and patch it
             && default_template_src.find("in message.content or") != std::string::npos) {
@@ -584,9 +584,9 @@ common_chat_templates_ptr common_chat_templates_init(
     bool add_bos = false;
     bool add_eos = false;
     if (model) {
-        const auto * vocab = llama_model_get_vocab(model);
-        const auto get_token = [&](llama_token token, const char * name, const char * jinja_variable_name) {
-            if (token == LLAMA_TOKEN_NULL) {
+        const auto * vocab = gptoss_model_get_vocab(model);
+        const auto get_token = [&](gptoss_token token, const char * name, const char * jinja_variable_name) {
+            if (token == GPTOSS_TOKEN_NULL) {
                 if (default_template_src.find(jinja_variable_name) != std::string::npos
                     || template_tool_use_src.find(jinja_variable_name) != std::string::npos) {
                     LOG_WRN("common_chat_templates_init: warning: vocab does not have a %s token, jinja template won't work as intended.\n", name);
@@ -595,10 +595,10 @@ common_chat_templates_ptr common_chat_templates_init(
             }
             return common_token_to_piece(vocab, token, true);
         };
-        token_bos = get_token(llama_vocab_bos(vocab), "BOS", "bos_token");
-        token_eos = get_token(llama_vocab_eos(vocab), "EOS", "eos_token");
-        add_bos = llama_vocab_get_add_bos(vocab);
-        add_eos = llama_vocab_get_add_eos(vocab);
+        token_bos = get_token(gptoss_vocab_bos(vocab), "BOS", "bos_token");
+        token_eos = get_token(gptoss_vocab_eos(vocab), "EOS", "eos_token");
+        add_bos = gptoss_vocab_get_add_bos(vocab);
+        add_eos = gptoss_vocab_get_add_eos(vocab);
     }
     common_chat_templates_ptr tmpls(new common_chat_templates());
     tmpls->has_explicit_template = has_explicit_template;
@@ -626,12 +626,12 @@ const char * common_chat_format_name(common_chat_format format) {
         case COMMON_CHAT_FORMAT_GENERIC: return "Generic";
         case COMMON_CHAT_FORMAT_MISTRAL_NEMO: return "Mistral Nemo";
         case COMMON_CHAT_FORMAT_MAGISTRAL: return "Magistral";
-        case COMMON_CHAT_FORMAT_LLAMA_3_X: return "Llama 3.x";
-        case COMMON_CHAT_FORMAT_LLAMA_3_X_WITH_BUILTIN_TOOLS: return "Llama 3.x with builtin tools";
+        case COMMON_CHAT_FORMAT_GPTOSS_3_X: return "Gptoss 3.x";
+        case COMMON_CHAT_FORMAT_GPTOSS_3_X_WITH_BUILTIN_TOOLS: return "Gptoss 3.x with builtin tools";
         case COMMON_CHAT_FORMAT_DEEPSEEK_R1: return "DeepSeek R1";
         case COMMON_CHAT_FORMAT_FIREFUNCTION_V2: return "FireFunction v2";
         case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_2: return "Functionary v3.2";
-        case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_LLAMA_3_1: return "Functionary v3.1 Llama 3.1";
+        case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_GPTOSS_3_1: return "Functionary v3.1 Gptoss 3.1";
         case COMMON_CHAT_FORMAT_DEEPSEEK_V3_1: return "DeepSeek V3.1";
         case COMMON_CHAT_FORMAT_HERMES_2_PRO: return "Hermes 2 Pro";
         case COMMON_CHAT_FORMAT_COMMAND_R7B: return "Command R7B";
@@ -1198,7 +1198,7 @@ static void expect_tool_parameters(const std::string & name, const json & parame
     }
 }
 
-static common_chat_params common_chat_params_init_llama_3_x(const common_chat_template & tmpl, const struct templates_params & inputs, bool allow_python_tag_builtin_tools) {
+static common_chat_params common_chat_params_init_gptoss_3_x(const common_chat_template & tmpl, const struct templates_params & inputs, bool allow_python_tag_builtin_tools) {
     auto builtin_tools = json::array();
     common_chat_params data;
     if (!inputs.tools.is_null()) {
@@ -1208,11 +1208,11 @@ static common_chat_params common_chat_params_init_llama_3_x(const common_chat_te
 
             auto handle_builtin_tool = [&](const std::string & name, const json & parameters) {
                 if (name == "wolfram_alpha" || name == "web_search" || name == "brave_search") {
-                    // https://github.com/meta-llama/llama-stack/blob/main/llama_stack/providers/remote/tool_runtime/wolfram_alpha/wolfram_alpha.py
-                    // https://github.com/meta-llama/llama-stack/blob/main/llama_stack/providers/remote/tool_runtime/brave_search/brave_search.py
+                    // https://github.com/meta-gptoss/gptoss-stack/blob/main/gptoss_stack/providers/remote/tool_runtime/wolfram_alpha/wolfram_alpha.py
+                    // https://github.com/meta-gptoss/gptoss-stack/blob/main/gptoss_stack/providers/remote/tool_runtime/brave_search/brave_search.py
                     expect_tool_parameters(name, parameters, {"query"});
                 } else if (name == "python" || name == "code_interpreter") {
-                    // https://github.com/meta-llama/llama-stack/blob/main/llama_stack/providers/inline/tool_runtime/code_interpreter/code_interpreter.py
+                    // https://github.com/meta-gptoss/gptoss-stack/blob/main/gptoss_stack/providers/inline/tool_runtime/code_interpreter/code_interpreter.py
                     expect_tool_parameters(name, parameters, {"code"});
                 } else {
                     return false;
@@ -1238,7 +1238,7 @@ static common_chat_params common_chat_params_init_llama_3_x(const common_chat_te
                 auto parameters = function.at("parameters");
                 builder.resolve_refs(parameters);
 
-                // https://github.com/meta-llama/llama-stack/tree/main/llama_stack/providers/remote/tool_runtime
+                // https://github.com/meta-gptoss/gptoss-stack/tree/main/gptoss_stack/providers/remote/tool_runtime
                 if (allow_python_tag_builtin_tools) {
                     handle_builtin_tool(name, parameters);
                 }
@@ -1265,8 +1265,8 @@ static common_chat_params common_chat_params_init_llama_3_x(const common_chat_te
             data.additional_stops.push_back("<|eom_id|>");
         });
         data.format = allow_python_tag_builtin_tools && !builtin_tools.empty()
-            ? COMMON_CHAT_FORMAT_LLAMA_3_X_WITH_BUILTIN_TOOLS
-            : COMMON_CHAT_FORMAT_LLAMA_3_X;
+            ? COMMON_CHAT_FORMAT_GPTOSS_3_X_WITH_BUILTIN_TOOLS
+            : COMMON_CHAT_FORMAT_GPTOSS_3_X;
     } else {
         data.format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
     }
@@ -1407,7 +1407,7 @@ static common_chat_params common_chat_params_init_apertus(const common_chat_temp
     }
     return data;
 }
-static void common_chat_parse_llama_3_1(common_chat_msg_parser & builder, bool with_builtin_tools = false) {
+static void common_chat_parse_gptoss_3_1(common_chat_msg_parser & builder, bool with_builtin_tools = false) {
     builder.try_parse_reasoning("<think>", "</think>");
 
     if (!builder.syntax().parse_tool_calls) {
@@ -1470,7 +1470,7 @@ static common_chat_params common_chat_params_init_deepseek_r1(const common_chat_
     auto prompt = apply(tmpl, inputs);
 
     // Hacks to fix the official (broken) prompt.
-    // It is advisable to use --chat-template-file models/templates/llama-cpp-deepseek-r1.jinja instead,
+    // It is advisable to use --chat-template-file models/templates/gptoss-cpp-deepseek-r1.jinja instead,
     // until the official template is fixed.
     if (tmpl.source().find("{% if ns.is_tool %}{{'<｜tool▁outputs▁end｜>'}}") != std::string::npos) {
         // Don't leave the chat dangling after tool results
@@ -1690,7 +1690,7 @@ static common_chat_params common_chat_params_init_gpt_oss(const common_chat_temp
 
     // Check if we need to replace the return token with end token during
     // inference and without generation prompt. For more details see:
-    // https://github.com/ggml-org/llama.cpp/issues/15417
+    // https://github.com/ggml-org/gptoss.cpp/issues/15417
     if (inputs.is_inference && !inputs.add_generation_prompt) {
         static constexpr std::string_view return_token = "<|return|>";
         static constexpr std::string_view end_token    = "<|end|>";
@@ -2036,8 +2036,8 @@ static void common_chat_parse_functionary_v3_2(common_chat_msg_parser & builder)
         });
 }
 
-static common_chat_params common_chat_params_init_functionary_v3_1_llama_3_1(const common_chat_template & tmpl, const struct templates_params & inputs) {
-    // https://github.com/MeetKai/functionary/blob/main/tests/prompt_test_v3-llama3.1.txt
+static common_chat_params common_chat_params_init_functionary_v3_1_gptoss_3_1(const common_chat_template & tmpl, const struct templates_params & inputs) {
+    // https://github.com/MeetKai/functionary/blob/main/tests/prompt_test_v3-gptoss3.1.txt
     common_chat_params data;
 
     if (!inputs.tools.is_null()) {
@@ -2085,7 +2085,7 @@ static common_chat_params common_chat_params_init_functionary_v3_1_llama_3_1(con
             builder.add_rule("root", inputs.parallel_tool_calls ? "(" + tool_call + ")+" : tool_call);
             data.grammar_triggers.push_back({COMMON_GRAMMAR_TRIGGER_TYPE_WORD, "<function="});
         });
-        data.format = COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_LLAMA_3_1;
+        data.format = COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_GPTOSS_3_1;
     } else {
         data.format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
     }
@@ -2094,12 +2094,12 @@ static common_chat_params common_chat_params_init_functionary_v3_1_llama_3_1(con
     // TODO: if (has_raw_python)
     return data;
 }
-static void common_chat_parse_functionary_v3_1_llama_3_1(common_chat_msg_parser & builder) {
+static void common_chat_parse_functionary_v3_1_gptoss_3_1(common_chat_msg_parser & builder) {
     if (!builder.syntax().parse_tool_calls) {
         builder.add_content(builder.consume_rest());
         return;
     }
-    // This version of Functionary still supports the llama 3.1 tool call format for the python tool.
+    // This version of Functionary still supports the gptoss 3.1 tool call format for the python tool.
     static const common_regex python_tag_regex(regex_escape("<|python_tag|>"));
 
     static const common_regex function_regex(R"(<function=(\w+)>)");
@@ -2767,13 +2767,13 @@ static common_chat_params common_chat_templates_apply_jinja(
     // Functionary v3.1 (w/ tools)
     if (src.find("<|start_header_id|>") != std::string::npos
         && src.find("<function=") != std::string::npos) {
-        return common_chat_params_init_functionary_v3_1_llama_3_1(tmpl, params);
+        return common_chat_params_init_functionary_v3_1_gptoss_3_1(tmpl, params);
     }
 
-    // Llama 3.1, 3.2, 3.3 (also requires date_string so using it even w/o tools)
+    // Gptoss 3.1, 3.2, 3.3 (also requires date_string so using it even w/o tools)
     if (src.find("<|start_header_id|>ipython<|end_header_id|>") != std::string::npos) {
         auto allow_python_tag_builtin_tools = src.find("<|python_tag|>") != std::string::npos;
-        return common_chat_params_init_llama_3_x(tmpl, params, allow_python_tag_builtin_tools);
+        return common_chat_params_init_gptoss_3_x(tmpl, params, allow_python_tag_builtin_tools);
     }
 
     if (src.find("[THINK]") != std::string::npos && src.find("[/THINK]") != std::string::npos) {
@@ -2794,13 +2794,13 @@ static common_chat_params common_chat_templates_apply_jinja(
     return common_chat_params_init_generic(tmpl, params);
 }
 
-// Legacy template route (adhoc C++ implementation of known templates), forward to llama_chat_apply_template.
+// Legacy template route (adhoc C++ implementation of known templates), forward to gptoss_chat_apply_template.
 static common_chat_params common_chat_templates_apply_legacy(
     const struct common_chat_templates * tmpls,
     const struct common_chat_templates_inputs & inputs)
 {
     int alloc_size = 0;
-    std::vector<llama_chat_message> chat;
+    std::vector<gptoss_chat_message> chat;
     std::vector<std::string> contents;
 
     for (const auto & msg : inputs.messages) {
@@ -2828,19 +2828,19 @@ static common_chat_params common_chat_templates_apply_legacy(
 
     // run the first time to get the total output length
     const auto & src = tmpls->template_default->source();
-    int32_t res = llama_chat_apply_template(src.c_str(), chat.data(), chat.size(), inputs.add_generation_prompt, buf.data(), buf.size());
+    int32_t res = gptoss_chat_apply_template(src.c_str(), chat.data(), chat.size(), inputs.add_generation_prompt, buf.data(), buf.size());
 
     // error: chat template is not supported
     if (res < 0) {
         // if the custom "tmpl" is not supported, we throw an error
-        // this is a bit redundant (for good), since we're not sure if user validated the custom template with llama_chat_verify_template()
+        // this is a bit redundant (for good), since we're not sure if user validated the custom template with gptoss_chat_verify_template()
         throw std::runtime_error("this custom template is not supported, try using --jinja");
     }
 
     // if it turns out that our buffer is too small, we resize it
     if ((size_t) res > buf.size()) {
         buf.resize(res);
-        res = llama_chat_apply_template(src.c_str(), chat.data(), chat.size(), inputs.add_generation_prompt, buf.data(), buf.size());
+        res = gptoss_chat_apply_template(src.c_str(), chat.data(), chat.size(), inputs.add_generation_prompt, buf.data(), buf.size());
     }
 
     common_chat_params params;
@@ -2884,11 +2884,11 @@ static void common_chat_parse(common_chat_msg_parser & builder) {
         case COMMON_CHAT_FORMAT_MAGISTRAL:
             common_chat_parse_magistral(builder);
             break;
-        case COMMON_CHAT_FORMAT_LLAMA_3_X:
-            common_chat_parse_llama_3_1(builder);
+        case COMMON_CHAT_FORMAT_GPTOSS_3_X:
+            common_chat_parse_gptoss_3_1(builder);
             break;
-        case COMMON_CHAT_FORMAT_LLAMA_3_X_WITH_BUILTIN_TOOLS:
-            common_chat_parse_llama_3_1(builder, /* with_builtin_tools= */ true);
+        case COMMON_CHAT_FORMAT_GPTOSS_3_X_WITH_BUILTIN_TOOLS:
+            common_chat_parse_gptoss_3_1(builder, /* with_builtin_tools= */ true);
             break;
         case COMMON_CHAT_FORMAT_DEEPSEEK_R1:
             common_chat_parse_deepseek_r1(builder);
@@ -2899,8 +2899,8 @@ static void common_chat_parse(common_chat_msg_parser & builder) {
         case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_2:
             common_chat_parse_functionary_v3_2(builder);
             break;
-        case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_LLAMA_3_1:
-            common_chat_parse_functionary_v3_1_llama_3_1(builder);
+        case COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_GPTOSS_3_1:
+            common_chat_parse_functionary_v3_1_gptoss_3_1(builder);
             break;
         case COMMON_CHAT_FORMAT_HERMES_2_PRO:
             common_chat_parse_hermes_2_pro(builder);

@@ -210,7 +210,7 @@ bool common_json_parse(
                 }
             }
 
-            const auto & magic_seed = out.healing_marker.marker = healing_marker;//"$llama.cpp.json$";
+            const auto & magic_seed = out.healing_marker.marker = healing_marker;//"$gptoss.cpp.json$";
 
             if (err_loc.stack.back().type == COMMON_JSON_STACK_ELEMENT_KEY) {
                 // We're inside an object value

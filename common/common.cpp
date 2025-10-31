@@ -7,7 +7,7 @@
 
 #include "common.h"
 #include "log.h"
-#include "llama.h"
+#include "gptoss.h"
 
 #include <algorithm>
 #include <cinttypes>
@@ -355,8 +355,8 @@ bool parse_cpu_mask(const std::string & mask, bool (&boolmask)[GGML_MAX_N_THREAD
 }
 
 void common_init() {
-    llama_log_set([](ggml_log_level level, const char * text, void * /*user_data*/) {
-        if (LOG_DEFAULT_LLAMA <= common_log_verbosity_thold) {
+    gptoss_log_set([](ggml_log_level level, const char * text, void * /*user_data*/) {
+        if (LOG_DEFAULT_GPTOSS <= common_log_verbosity_thold) {
             common_log_add(common_log_main(), level, "%s", text);
         }
     }, NULL);
@@ -367,7 +367,7 @@ void common_init() {
     const char * build_type = " (debug)";
 #endif
 
-    LOG_INF("build: %d (%s) with %s for %s%s\n", LLAMA_BUILD_NUMBER, LLAMA_COMMIT, LLAMA_COMPILER, LLAMA_BUILD_TARGET, build_type);
+    LOG_INF("build: %d (%s) with %s for %s%s\n", GPTOSS_BUILD_NUMBER, GPTOSS_COMMIT, GPTOSS_COMPILER, GPTOSS_BUILD_TARGET, build_type);
 }
 
 std::string common_params_get_system_info(const common_params & params) {
@@ -380,9 +380,9 @@ std::string common_params_get_system_info(const common_params & params) {
 #if defined(_WIN32) && (_WIN32_WINNT >= 0x0601) && !defined(__MINGW64__) // windows 7 and later
     // TODO: windows + arm64 + mingw64
     DWORD logicalProcessorCount = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
-    os << " / " << logicalProcessorCount << " | " << llama_print_system_info();
+    os << " / " << logicalProcessorCount << " | " << gptoss_print_system_info();
 #else
-    os << " / " << std::thread::hardware_concurrency() << " | " << llama_print_system_info();
+    os << " / " << std::thread::hardware_concurrency() << " | " << gptoss_print_system_info();
 #endif
 
     return os.str();
@@ -549,7 +549,7 @@ std::string string_from(const std::vector<int> & values) {
     return buf.str();
 }
 
-std::string string_from(const struct llama_context * ctx, const std::vector<llama_token> & tokens) {
+std::string string_from(const struct gptoss_context * ctx, const std::vector<gptoss_token> & tokens) {
     std::stringstream buf;
 
     buf << "[ ";
@@ -573,7 +573,7 @@ std::string string_from(const struct llama_context * ctx, const std::vector<llam
     return buf.str();
 }
 
-std::string string_from(const struct llama_context * ctx, const struct llama_batch & batch) {
+std::string string_from(const struct gptoss_context * ctx, const struct gptoss_batch & batch) {
     std::stringstream buf;
 
     buf << "[ ";
@@ -638,27 +638,27 @@ void string_process_escapes(std::string & input) {
     input.resize(output_idx);
 }
 
-bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_override> & overrides) {
+bool string_parse_kv_override(const char * data, std::vector<gptoss_model_kv_override> & overrides) {
     const char * sep = strchr(data, '=');
     if (sep == nullptr || sep - data >= 128) {
         LOG_ERR("%s: malformed KV override '%s'\n", __func__, data);
         return false;
     }
-    llama_model_kv_override kvo;
+    gptoss_model_kv_override kvo;
     std::strncpy(kvo.key, data, sep - data);
     kvo.key[sep - data] = 0;
     sep++;
     if (strncmp(sep, "int:", 4) == 0) {
         sep += 4;
-        kvo.tag = LLAMA_KV_OVERRIDE_TYPE_INT;
+        kvo.tag = GPTOSS_KV_OVERRIDE_TYPE_INT;
         kvo.val_i64 = std::atol(sep);
     } else if (strncmp(sep, "float:", 6) == 0) {
         sep += 6;
-        kvo.tag = LLAMA_KV_OVERRIDE_TYPE_FLOAT;
+        kvo.tag = GPTOSS_KV_OVERRIDE_TYPE_FLOAT;
         kvo.val_f64 = std::atof(sep);
     } else if (strncmp(sep, "bool:", 5) == 0) {
         sep += 5;
-        kvo.tag = LLAMA_KV_OVERRIDE_TYPE_BOOL;
+        kvo.tag = GPTOSS_KV_OVERRIDE_TYPE_BOOL;
         if (std::strcmp(sep, "true") == 0) {
             kvo.val_bool = true;
         } else if (std::strcmp(sep, "false") == 0) {
@@ -669,7 +669,7 @@ bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_over
         }
     } else if (strncmp(sep, "str:", 4) == 0) {
         sep += 4;
-        kvo.tag = LLAMA_KV_OVERRIDE_TYPE_STR;
+        kvo.tag = GPTOSS_KV_OVERRIDE_TYPE_STR;
         if (strlen(sep) > 127) {
             LOG_ERR("%s: malformed KV override '%s', value cannot exceed 127 chars\n", __func__, data);
             return false;
@@ -864,8 +864,8 @@ std::string fs_get_cache_directory() {
         }
         return p;
     };
-    if (getenv("LLAMA_CACHE")) {
-        cache_directory = std::getenv("LLAMA_CACHE");
+    if (getenv("GPTOSS_CACHE")) {
+        cache_directory = std::getenv("GPTOSS_CACHE");
     } else {
 #if defined(__linux__) || defined(__FreeBSD__) || defined(_AIX) || defined(__OpenBSD__)
         if (std::getenv("XDG_CACHE_HOME")) {
@@ -893,7 +893,7 @@ std::string fs_get_cache_directory() {
 #  error Unknown architecture
 #endif
         cache_directory = ensure_trailing_slash(cache_directory);
-        cache_directory += "llama.cpp";
+        cache_directory += "gptoss.cpp";
     }
     return ensure_trailing_slash(cache_directory);
 }
@@ -915,45 +915,45 @@ std::string fs_get_cache_file(const std::string & filename) {
 
 struct common_init_result common_init_from_params(common_params & params) {
     common_init_result iparams;
-    auto mparams = common_model_params_to_llama(params);
+    auto mparams = common_model_params_to_gptoss(params);
 
-    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    gptoss_model * model = gptoss_model_load_from_file(params.model.path.c_str(), mparams);
     if (model == NULL) {
         LOG_ERR("%s: failed to load model '%s', try reducing --n-gpu-layers if you're running out of VRAM\n",
             __func__, params.model.path.c_str());
         return iparams;
     }
 
-    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
 
-    auto cparams = common_context_params_to_llama(params);
+    auto cparams = common_context_params_to_gptoss(params);
 
-    llama_context * lctx = llama_init_from_model(model, cparams);
+    gptoss_context * lctx = gptoss_init_from_model(model, cparams);
     if (lctx == NULL) {
         LOG_ERR("%s: failed to create context with model '%s', try reducing --n-gpu-layers if you're running out of VRAM\n",
             __func__, params.model.path.c_str());
-        llama_model_free(model);
+        gptoss_model_free(model);
         return iparams;
     }
 
-    if (params.ctx_shift && !llama_memory_can_shift(llama_get_memory(lctx))) {
+    if (params.ctx_shift && !gptoss_memory_can_shift(gptoss_get_memory(lctx))) {
         LOG_WRN("%s: KV cache shifting is not supported for this context, disabling KV cache shifting\n", __func__);
         params.ctx_shift = false;
     }
 
     if (!params.control_vectors.empty()) {
         if (params.control_vector_layer_start <= 0) params.control_vector_layer_start = 1;
-        if (params.control_vector_layer_end   <= 0) params.control_vector_layer_end   = llama_model_n_layer(model);
+        if (params.control_vector_layer_end   <= 0) params.control_vector_layer_end   = gptoss_model_n_layer(model);
 
         const auto cvec = common_control_vector_load(params.control_vectors);
         if (cvec.n_embd == -1) {
-            llama_free(lctx);
-            llama_model_free(model);
+            gptoss_free(lctx);
+            gptoss_model_free(model);
 
             return iparams;
         }
 
-        int err = llama_apply_adapter_cvec(
+        int err = gptoss_apply_adapter_cvec(
                 lctx,
                 cvec.data.data(),
                 cvec.data.size(),
@@ -961,24 +961,24 @@ struct common_init_result common_init_from_params(common_params & params) {
                 params.control_vector_layer_start,
                 params.control_vector_layer_end);
         if (err) {
-            llama_free(lctx);
-            llama_model_free(model);
+            gptoss_free(lctx);
+            gptoss_model_free(model);
 
             return iparams;
         }
     }
 
-    if (llama_pooling_type(lctx) == LLAMA_POOLING_TYPE_RANK) {
+    if (gptoss_pooling_type(lctx) == GPTOSS_POOLING_TYPE_RANK) {
         bool ok = true;
 
-        if (llama_vocab_bos(vocab) == LLAMA_TOKEN_NULL) {
+        if (gptoss_vocab_bos(vocab) == GPTOSS_TOKEN_NULL) {
             LOG_WRN("%s: warning: vocab does not have a  BOS token, reranking will not work\n", __func__);
             ok = false;
         }
 
-        bool has_eos = llama_vocab_eos(vocab) != LLAMA_TOKEN_NULL;
-        bool has_sep = llama_vocab_sep(vocab) != LLAMA_TOKEN_NULL;
-        bool has_rerank_prompt = llama_model_chat_template(model, "rerank") != NULL;
+        bool has_eos = gptoss_vocab_eos(vocab) != GPTOSS_TOKEN_NULL;
+        bool has_sep = gptoss_vocab_sep(vocab) != GPTOSS_TOKEN_NULL;
+        bool has_rerank_prompt = gptoss_model_chat_template(model, "rerank") != NULL;
 
         if (!has_eos && !has_sep && !has_rerank_prompt) {
             LOG_WRN("%s: warning: vocab does not have an EOS token, SEP token, or rerank prompt. Reranking will not work\n", __func__);
@@ -988,8 +988,8 @@ struct common_init_result common_init_from_params(common_params & params) {
         }
 
         if (!ok) {
-            llama_free(lctx);
-            llama_model_free(model);
+            gptoss_free(lctx);
+            gptoss_model_free(model);
 
             return iparams;
         }
@@ -997,20 +997,20 @@ struct common_init_result common_init_from_params(common_params & params) {
 
     // load and optionally apply lora adapters
     for (auto & la : params.lora_adapters) {
-        llama_adapter_lora_ptr lora;
-        lora.reset(llama_adapter_lora_init(model, la.path.c_str()));
+        gptoss_adapter_lora_ptr lora;
+        lora.reset(gptoss_adapter_lora_init(model, la.path.c_str()));
         if (lora == nullptr) {
             LOG_ERR("%s: failed to apply lora adapter '%s'\n", __func__, la.path.c_str());
-            llama_free(lctx);
-            llama_model_free(model);
+            gptoss_free(lctx);
+            gptoss_model_free(model);
             return iparams;
         }
 
         char buf[1024];
         la.ptr = lora.get();
-        llama_adapter_meta_val_str(la.ptr, "adapter.lora.task_name", buf, sizeof(buf));
+        gptoss_adapter_meta_val_str(la.ptr, "adapter.lora.task_name", buf, sizeof(buf));
         la.task_name = buf;
-        llama_adapter_meta_val_str(la.ptr, "adapter.lora.prompt_prefix", buf, sizeof(buf));
+        gptoss_adapter_meta_val_str(la.ptr, "adapter.lora.prompt_prefix", buf, sizeof(buf));
         la.prompt_prefix = buf;
         iparams.lora.emplace_back(std::move(lora)); // copy to list of loaded adapters
     }
@@ -1019,14 +1019,14 @@ struct common_init_result common_init_from_params(common_params & params) {
         common_set_adapter_lora(lctx, params.lora_adapters);
     }
 
-    if (params.sampling.ignore_eos && llama_vocab_eos(vocab) == LLAMA_TOKEN_NULL) {
+    if (params.sampling.ignore_eos && gptoss_vocab_eos(vocab) == GPTOSS_TOKEN_NULL) {
         LOG_WRN("%s: warning: vocab does not have an EOS token, ignoring --ignore-eos\n", __func__);
         params.sampling.ignore_eos = false;
     }
 
     // initialize once
-    for (llama_token i = 0; i < llama_vocab_n_tokens(vocab); i++) {
-        if (llama_vocab_is_eog(vocab, i)) {
+    for (gptoss_token i = 0; i < gptoss_vocab_n_tokens(vocab); i++) {
+        if (gptoss_vocab_is_eog(vocab, i)) {
             LOG_INF("%s: added %s logit bias = %f\n", __func__, common_token_to_piece(lctx, i).c_str(), -INFINITY);
             params.sampling.logit_bias_eog.push_back({i, -INFINITY});
         }
@@ -1040,51 +1040,51 @@ struct common_init_result common_init_from_params(common_params & params) {
     }
 
     if (params.sampling.penalty_last_n == -1) {
-        LOG_INF("%s: setting penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
-        params.sampling.penalty_last_n = llama_n_ctx(lctx);
+        LOG_INF("%s: setting penalty_last_n to ctx_size = %d\n", __func__, gptoss_n_ctx(lctx));
+        params.sampling.penalty_last_n = gptoss_n_ctx(lctx);
     }
 
     if (params.sampling.dry_penalty_last_n == -1) {
-        LOG_INF("%s: setting dry_penalty_last_n to ctx_size = %d\n", __func__, llama_n_ctx(lctx));
-        params.sampling.dry_penalty_last_n = llama_n_ctx(lctx);
+        LOG_INF("%s: setting dry_penalty_last_n to ctx_size = %d\n", __func__, gptoss_n_ctx(lctx));
+        params.sampling.dry_penalty_last_n = gptoss_n_ctx(lctx);
     }
 
     if (params.warmup) {
         LOG_WRN("%s: warming up the model with an empty run - please wait ... (--no-warmup to disable)\n", __func__);
 
-        llama_set_warmup(lctx, true);
+        gptoss_set_warmup(lctx, true);
 
-        std::vector<llama_token> tmp;
-        llama_token bos = llama_vocab_bos(vocab);
-        llama_token eos = llama_vocab_eos(vocab);
+        std::vector<gptoss_token> tmp;
+        gptoss_token bos = gptoss_vocab_bos(vocab);
+        gptoss_token eos = gptoss_vocab_eos(vocab);
 
         // some models (e.g. T5) don't have a BOS token
-        if (bos != LLAMA_TOKEN_NULL) {
+        if (bos != GPTOSS_TOKEN_NULL) {
             tmp.push_back(bos);
         }
-        if (eos != LLAMA_TOKEN_NULL) {
+        if (eos != GPTOSS_TOKEN_NULL) {
             tmp.push_back(eos);
         }
         if (tmp.empty()) {
             tmp.push_back(0);
         }
 
-        if (llama_model_has_encoder(model)) {
-            llama_encode(lctx, llama_batch_get_one(tmp.data(), tmp.size()));
-            llama_token decoder_start_token_id = llama_model_decoder_start_token(model);
-            if (decoder_start_token_id == LLAMA_TOKEN_NULL) {
+        if (gptoss_model_has_encoder(model)) {
+            gptoss_encode(lctx, gptoss_batch_get_one(tmp.data(), tmp.size()));
+            gptoss_token decoder_start_token_id = gptoss_model_decoder_start_token(model);
+            if (decoder_start_token_id == GPTOSS_TOKEN_NULL) {
                 decoder_start_token_id = bos;
             }
             tmp.clear();
             tmp.push_back(decoder_start_token_id);
         }
-        if (llama_model_has_decoder(model)) {
-            llama_decode(lctx, llama_batch_get_one(tmp.data(), std::min(tmp.size(), (size_t) params.n_batch)));
+        if (gptoss_model_has_decoder(model)) {
+            gptoss_decode(lctx, gptoss_batch_get_one(tmp.data(), std::min(tmp.size(), (size_t) params.n_batch)));
         }
-        llama_memory_clear(llama_get_memory(lctx), true);
-        llama_synchronize(lctx);
-        llama_perf_context_reset(lctx);
-        llama_set_warmup(lctx, false);
+        gptoss_memory_clear(gptoss_get_memory(lctx), true);
+        gptoss_synchronize(lctx);
+        gptoss_perf_context_reset(lctx);
+        gptoss_set_warmup(lctx, false);
     }
 
     iparams.model.reset(model);
@@ -1106,17 +1106,17 @@ std::string get_model_endpoint() {
     return model_endpoint;
 }
 
-void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info> & lora) {
-    llama_clear_adapter_lora(ctx);
+void common_set_adapter_lora(struct gptoss_context * ctx, std::vector<common_adapter_lora_info> & lora) {
+    gptoss_clear_adapter_lora(ctx);
     for (auto & la : lora) {
         if (la.scale != 0.0f) {
-            llama_set_adapter_lora(ctx, la.ptr, la.scale);
+            gptoss_set_adapter_lora(ctx, la.ptr, la.scale);
         }
     }
 }
 
-struct llama_model_params common_model_params_to_llama(common_params & params) {
-    auto mparams = llama_model_default_params();
+struct gptoss_model_params common_model_params_to_gptoss(common_params & params) {
+    auto mparams = gptoss_model_default_params();
 
     if (!params.devices.empty()) {
         mparams.devices = params.devices.data();
@@ -1155,8 +1155,8 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     return mparams;
 }
 
-struct llama_context_params common_context_params_to_llama(const common_params & params) {
-    auto cparams = llama_context_default_params();
+struct gptoss_context_params common_context_params_to_gptoss(const common_params & params) {
+    auto cparams = gptoss_context_default_params();
 
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
@@ -1211,17 +1211,17 @@ struct ggml_threadpool_params ggml_threadpool_params_from_cpu_params(const cpu_p
 // Batch utils
 //
 
-void common_batch_clear(struct llama_batch & batch) {
+void common_batch_clear(struct gptoss_batch & batch) {
     batch.n_tokens = 0;
 }
 
 void common_batch_add(
-                 struct llama_batch & batch,
-                        llama_token   id,
-                          llama_pos   pos,
-    const std::vector<llama_seq_id> & seq_ids,
+                 struct gptoss_batch & batch,
+                        gptoss_token   id,
+                          gptoss_pos   pos,
+    const std::vector<gptoss_seq_id> & seq_ids,
                                bool   logits) {
-    GGML_ASSERT(batch.seq_id[batch.n_tokens] && "llama_batch size exceeded");
+    GGML_ASSERT(batch.seq_id[batch.n_tokens] && "gptoss_batch size exceeded");
 
     batch.token   [batch.n_tokens] = id;
     batch.pos     [batch.n_tokens] = pos;
@@ -1238,14 +1238,14 @@ void common_batch_add(
 // Token utils
 //
 
-size_t common_lcp(const llama_tokens & a, const llama_tokens & b) {
+size_t common_lcp(const gptoss_tokens & a, const gptoss_tokens & b) {
     size_t i;
     for (i = 0; i < a.size() && i < b.size() && a[i] == b[i]; i++) {}
 
     return i;
 }
 
-size_t common_lcs(const llama_tokens & a, const llama_tokens & b) {
+size_t common_lcs(const gptoss_tokens & a, const gptoss_tokens & b) {
     // check for empty sequences
     if (a.empty() || b.empty()) {
         return 0;
@@ -1298,31 +1298,31 @@ size_t common_lcs(const llama_tokens & a, const llama_tokens & b) {
 // Vocab utils
 //
 
-std::vector<llama_token> common_tokenize(
-  const struct llama_context * ctx,
+std::vector<gptoss_token> common_tokenize(
+  const struct gptoss_context * ctx,
            const std::string & text,
                         bool   add_special,
                         bool   parse_special) {
-    const llama_model * model = llama_get_model(ctx);
-    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const gptoss_model * model = gptoss_get_model(ctx);
+    const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
     return common_tokenize(vocab, text, add_special, parse_special);
 }
 
-std::vector<llama_token> common_tokenize(
-    const struct llama_vocab * vocab,
+std::vector<gptoss_token> common_tokenize(
+    const struct gptoss_vocab * vocab,
            const std::string & text,
                         bool   add_special,
                         bool   parse_special) {
     // upper limit for the number of tokens
     int n_tokens = text.length() + 2 * add_special;
-    std::vector<llama_token> result(n_tokens);
-    n_tokens = llama_tokenize(vocab, text.data(), text.length(), result.data(), result.size(), add_special, parse_special);
+    std::vector<gptoss_token> result(n_tokens);
+    n_tokens = gptoss_tokenize(vocab, text.data(), text.length(), result.data(), result.size(), add_special, parse_special);
     if (n_tokens == std::numeric_limits<int32_t>::min()) {
         throw std::runtime_error("Tokenization failed: input text too large, tokenization result exceeds int32_t limit");
     }
     if (n_tokens < 0) {
         result.resize(-n_tokens);
-        int check = llama_tokenize(vocab, text.data(), text.length(), result.data(), result.size(), add_special, parse_special);
+        int check = gptoss_tokenize(vocab, text.data(), text.length(), result.data(), result.size(), add_special, parse_special);
         GGML_ASSERT(check == -n_tokens);
     } else {
         result.resize(n_tokens);
@@ -1330,19 +1330,19 @@ std::vector<llama_token> common_tokenize(
     return result;
 }
 
-std::string common_token_to_piece(const struct llama_context * ctx, llama_token token, bool special) {
-    const llama_model * model = llama_get_model(ctx);
-    const llama_vocab * vocab = llama_model_get_vocab(model);
+std::string common_token_to_piece(const struct gptoss_context * ctx, gptoss_token token, bool special) {
+    const gptoss_model * model = gptoss_get_model(ctx);
+    const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
     return common_token_to_piece(vocab, token, special);
 }
 
-std::string common_token_to_piece(const struct llama_vocab * vocab, llama_token token, bool special) {
+std::string common_token_to_piece(const struct gptoss_vocab * vocab, gptoss_token token, bool special) {
     std::string piece;
     piece.resize(piece.capacity());  // using string internal cache, 15 bytes + '\n'
-    const int n_chars = llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
+    const int n_chars = gptoss_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
     if (n_chars < 0) {
         piece.resize(-n_chars);
-        int check = llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
+        int check = gptoss_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
         GGML_ASSERT(check == -n_chars);
     }
     else {
@@ -1352,19 +1352,19 @@ std::string common_token_to_piece(const struct llama_vocab * vocab, llama_token 
     return piece;
 }
 
-std::string common_detokenize(const struct llama_context * ctx, const std::vector<llama_token> & tokens, bool special) {
-    const llama_model * model = llama_get_model(ctx);
-    const llama_vocab * vocab = llama_model_get_vocab(model);
+std::string common_detokenize(const struct gptoss_context * ctx, const std::vector<gptoss_token> & tokens, bool special) {
+    const gptoss_model * model = gptoss_get_model(ctx);
+    const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
     return common_detokenize(vocab, tokens, special);
 }
 
-std::string common_detokenize(const struct llama_vocab * vocab, const std::vector<llama_token> & tokens, bool special) {
+std::string common_detokenize(const struct gptoss_vocab * vocab, const std::vector<gptoss_token> & tokens, bool special) {
     std::string text;
     text.resize(std::max(text.capacity(), tokens.size()));
-    int32_t n_chars = llama_detokenize(vocab, tokens.data(), (int32_t)tokens.size(), &text[0], (int32_t)text.size(), false, special);
+    int32_t n_chars = gptoss_detokenize(vocab, tokens.data(), (int32_t)tokens.size(), &text[0], (int32_t)text.size(), false, special);
     if (n_chars < 0) {
         text.resize(-n_chars);
-        n_chars = llama_detokenize(vocab, tokens.data(), (int32_t)tokens.size(), &text[0], (int32_t)text.size(), false, special);
+        n_chars = gptoss_detokenize(vocab, tokens.data(), (int32_t)tokens.size(), &text[0], (int32_t)text.size(), false, special);
         GGML_ASSERT(n_chars <= (int32_t)text.size());  // whitespace trimming is performed after per-token detokenization
     }
 
@@ -1559,18 +1559,18 @@ common_control_vector_data common_control_vector_load(const std::vector<common_c
     return result;
 }
 
-ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride) {
-    const int64_t ne_datapoint = llama_n_ctx(ctx);
+ggml_opt_dataset_t common_opt_dataset_init(struct gptoss_context * ctx, const std::vector<gptoss_token> & tokens, int64_t stride) {
+    const int64_t ne_datapoint = gptoss_n_ctx(ctx);
     const int64_t ndata        = (tokens.size() - ne_datapoint - 1) / stride;
     ggml_opt_dataset_t result = ggml_opt_dataset_init(
         GGML_TYPE_I32, GGML_TYPE_I32, ne_datapoint, ne_datapoint, ndata, /*ndata_shard =*/ 1);
 
-    llama_token * data   = (llama_token *) ggml_opt_dataset_data(result)->data;
-    llama_token * labels = (llama_token *) ggml_opt_dataset_labels(result)->data;
+    gptoss_token * data   = (gptoss_token *) ggml_opt_dataset_data(result)->data;
+    gptoss_token * labels = (gptoss_token *) ggml_opt_dataset_labels(result)->data;
 
     for (int64_t idata = 0; idata < ndata; ++idata) {
-        memcpy(data   + idata*ne_datapoint, tokens.data() + idata*stride + 0, ne_datapoint*sizeof(llama_token));
-        memcpy(labels + idata*ne_datapoint, tokens.data() + idata*stride + 1, ne_datapoint*sizeof(llama_token));
+        memcpy(data   + idata*ne_datapoint, tokens.data() + idata*stride + 0, ne_datapoint*sizeof(gptoss_token));
+        memcpy(labels + idata*ne_datapoint, tokens.data() + idata*stride + 1, ne_datapoint*sizeof(gptoss_token));
     }
 
     return result;

@@ -22,7 +22,7 @@
 #endif
 
 #define LOG_DEFAULT_DEBUG 1
-#define LOG_DEFAULT_LLAMA 0
+#define LOG_DEFAULT_GPTOSS 0
 
 enum log_colors {
     LOG_COLORS_AUTO     = -1,

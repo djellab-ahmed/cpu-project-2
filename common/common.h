@@ -12,7 +12,7 @@
 #include <cmath>
 
 #include "ggml-opt.h"
-#include "llama-cpp.h"
+#include "gptoss-cpp.h"
 
 #ifdef _WIN32
 #define DIRECTORY_SEPARATOR '\\'
@@ -24,8 +24,8 @@
 #define die_fmt(fmt, ...) do { fprintf(stderr, "error: " fmt "\n", __VA_ARGS__); exit(1); } while (0)
 
 #define print_build_info() do {                                                                     \
-    fprintf(stderr, "%s: build = %d (%s)\n",      __func__, LLAMA_BUILD_NUMBER, LLAMA_COMMIT);      \
-    fprintf(stderr, "%s: built with %s for %s\n", __func__, LLAMA_COMPILER, LLAMA_BUILD_TARGET);    \
+    fprintf(stderr, "%s: build = %d (%s)\n",      __func__, GPTOSS_BUILD_NUMBER, GPTOSS_COMMIT);      \
+    fprintf(stderr, "%s: built with %s for %s\n", __func__, GPTOSS_COMPILER, GPTOSS_BUILD_TARGET);    \
 } while(0)
 
 #define DEFAULT_MODEL_PATH "models/7B/ggml-model-f16.gguf"
@@ -37,16 +37,16 @@ struct common_adapter_lora_info {
     std::string task_name;
     std::string prompt_prefix;
 
-    struct llama_adapter_lora * ptr;
+    struct gptoss_adapter_lora * ptr;
 };
 
-using llama_tokens = std::vector<llama_token>;
+using gptoss_tokens = std::vector<gptoss_token>;
 
 // build info
-extern int LLAMA_BUILD_NUMBER;
-extern const char * LLAMA_COMMIT;
-extern const char * LLAMA_COMPILER;
-extern const char * LLAMA_BUILD_TARGET;
+extern int GPTOSS_BUILD_NUMBER;
+extern const char * GPTOSS_COMMIT;
+extern const char * GPTOSS_COMPILER;
+extern const char * GPTOSS_BUILD_TARGET;
 
 struct common_control_vector_load_info;
 
@@ -70,27 +70,27 @@ int32_t cpu_get_num_math();
 // Common params
 //
 
-enum llama_example {
-    LLAMA_EXAMPLE_COMMON,
-    LLAMA_EXAMPLE_SPECULATIVE,
-    LLAMA_EXAMPLE_MAIN,
-    LLAMA_EXAMPLE_EMBEDDING,
-    LLAMA_EXAMPLE_PERPLEXITY,
-    LLAMA_EXAMPLE_RETRIEVAL,
-    LLAMA_EXAMPLE_PASSKEY,
-    LLAMA_EXAMPLE_IMATRIX,
-    LLAMA_EXAMPLE_BENCH,
-    LLAMA_EXAMPLE_SERVER,
-    LLAMA_EXAMPLE_CVECTOR_GENERATOR,
-    LLAMA_EXAMPLE_EXPORT_LORA,
-    LLAMA_EXAMPLE_MTMD,
-    LLAMA_EXAMPLE_LOOKUP,
-    LLAMA_EXAMPLE_PARALLEL,
-    LLAMA_EXAMPLE_TTS,
-    LLAMA_EXAMPLE_DIFFUSION,
-    LLAMA_EXAMPLE_FINETUNE,
+enum gptoss_example {
+    GPTOSS_EXAMPLE_COMMON,
+    GPTOSS_EXAMPLE_SPECULATIVE,
+    GPTOSS_EXAMPLE_MAIN,
+    GPTOSS_EXAMPLE_EMBEDDING,
+    GPTOSS_EXAMPLE_PERPLEXITY,
+    GPTOSS_EXAMPLE_RETRIEVAL,
+    GPTOSS_EXAMPLE_PASSKEY,
+    GPTOSS_EXAMPLE_IMATRIX,
+    GPTOSS_EXAMPLE_BENCH,
+    GPTOSS_EXAMPLE_SERVER,
+    GPTOSS_EXAMPLE_CVECTOR_GENERATOR,
+    GPTOSS_EXAMPLE_EXPORT_LORA,
+    GPTOSS_EXAMPLE_MTMD,
+    GPTOSS_EXAMPLE_LOOKUP,
+    GPTOSS_EXAMPLE_PARALLEL,
+    GPTOSS_EXAMPLE_TTS,
+    GPTOSS_EXAMPLE_DIFFUSION,
+    GPTOSS_EXAMPLE_FINETUNE,
 
-    LLAMA_EXAMPLE_COUNT,
+    GPTOSS_EXAMPLE_COUNT,
 };
 
 enum common_sampler_type {
@@ -130,12 +130,12 @@ enum common_grammar_trigger_type {
 struct common_grammar_trigger {
     common_grammar_trigger_type type;
     std::string value;
-    llama_token token = LLAMA_TOKEN_NULL;
+    gptoss_token token = GPTOSS_TOKEN_NULL;
 };
 
 // sampling parameters
 struct common_params_sampling {
-    uint32_t seed = LLAMA_DEFAULT_SEED; // the seed used to initialize llama_sampler
+    uint32_t seed = GPTOSS_DEFAULT_SEED; // the seed used to initialize gptoss_sampler
 
     int32_t n_prev             = 64;    // number of previous tokens to remember
     int32_t n_probs            = 0;     // if greater than 0, output the probabilities of top n_probs tokens.
@@ -183,10 +183,10 @@ struct common_params_sampling {
     std::string                         grammar; // optional BNF-like grammar to constrain sampling
     bool                                grammar_lazy = false;
     std::vector<common_grammar_trigger> grammar_triggers; // optional triggers (for lazy grammars)
-    std::set<llama_token>               preserved_tokens;
+    std::set<gptoss_token>               preserved_tokens;
 
-    std::vector<llama_logit_bias> logit_bias;     // logit biases to apply
-    std::vector<llama_logit_bias> logit_bias_eog; // pre-calculated logit biases for EOG tokens
+    std::vector<gptoss_logit_bias> logit_bias;     // logit biases to apply
+    std::vector<gptoss_logit_bias> logit_bias_eog; // pre-calculated logit biases for EOG tokens
 
     // print the parameters into a string
     std::string print() const;
@@ -210,7 +210,7 @@ struct common_params_speculative {
     float   p_split      =  0.1f; // speculative decoding split probability
     float   p_min        = 0.75f; // minimum speculative decoding probability (greedy)
     std::vector<std::pair<std::string, std::string>> replacements; // main to speculative model replacements
-    std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+    std::vector<gptoss_model_tensor_buft_override> tensor_buft_overrides;
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
@@ -251,7 +251,7 @@ enum common_reasoning_format {
     COMMON_REASONING_FORMAT_DEEPSEEK,        // Extract thinking tag contents and return as `message.reasoning_content`, including in streaming deltas.
     // do not extend this enum unless you absolutely have to
     // in most cases, use COMMON_REASONING_FORMAT_AUTO
-    // see: https://github.com/ggml-org/llama.cpp/pull/15408
+    // see: https://github.com/ggml-org/gptoss.cpp/pull/15408
 };
 
 
@@ -300,7 +300,7 @@ struct common_params {
     int32_t main_gpu          = 0;   // the GPU that is used for scratch and small tensors
     float   tensor_split[128] = {0}; // how split tensors should be distributed across GPUs
 
-    enum llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER; // how to split the model across GPUs
+    enum gptoss_split_mode split_mode = GPTOSS_SPLIT_MODE_LAYER; // how to split the model across GPUs
 
     struct cpu_params cpuparams;
     struct cpu_params cpuparams_batch;
@@ -310,10 +310,10 @@ struct common_params {
 
     ggml_numa_strategy numa = GGML_NUMA_STRATEGY_DISABLED;
 
-    enum llama_rope_scaling_type rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED;
-    enum llama_pooling_type      pooling_type      = LLAMA_POOLING_TYPE_UNSPECIFIED; // pooling type for embeddings
-    enum llama_attention_type    attention_type    = LLAMA_ATTENTION_TYPE_UNSPECIFIED; // attention type for embeddings
-    enum llama_flash_attn_type   flash_attn_type   = LLAMA_FLASH_ATTN_TYPE_AUTO; // whether to use Flash Attention
+    enum gptoss_rope_scaling_type rope_scaling_type = GPTOSS_ROPE_SCALING_TYPE_UNSPECIFIED;
+    enum gptoss_pooling_type      pooling_type      = GPTOSS_POOLING_TYPE_UNSPECIFIED; // pooling type for embeddings
+    enum gptoss_attention_type    attention_type    = GPTOSS_ATTENTION_TYPE_UNSPECIFIED; // attention type for embeddings
+    enum gptoss_flash_attn_type   flash_attn_type   = GPTOSS_FLASH_ATTN_TYPE_AUTO; // whether to use Flash Attention
 
     struct common_params_sampling    sampling;
     struct common_params_speculative speculative;
@@ -336,10 +336,10 @@ struct common_params {
 
     std::vector<std::string> in_files;   // all input files
     std::vector<std::string> antiprompt; // strings upon which more user input is prompted (a.k.a. reverse prompts)
-    std::vector<llama_model_kv_override> kv_overrides;
-    std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+    std::vector<gptoss_model_kv_override> kv_overrides;
+    std::vector<gptoss_model_tensor_buft_override> tensor_buft_overrides;
 
-    bool lora_init_without_apply = false; // only load lora to memory, but do not apply it to ctx (user can manually apply lora later using llama_adapter_lora_apply)
+    bool lora_init_without_apply = false; // only load lora to memory, but do not apply it to ctx (user can manually apply lora later using gptoss_adapter_lora_apply)
     std::vector<common_adapter_lora_info> lora_adapters; // lora adapter path with user defined scale
 
     std::vector<common_control_vector_load_info> control_vectors; // control vector with user defined scale
@@ -379,7 +379,7 @@ struct common_params {
     bool cont_batching     = true;  // insert new sequences for decoding on-the-fly
     bool no_perf           = false; // disable performance metrics
     bool ctx_shift         = false; // context shift on infinite text generation
-    bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+    bool swa_full          = false; // use full-size SWA cache (https://github.com/ggml-org/gptoss.cpp/pull/13194#issuecomment-2868343055)
     bool kv_unified        = false; // enable unified KV cache
 
     bool input_prefix_bos  = false; // prefix BOS to user inputs, preceding input_prefix
@@ -503,7 +503,7 @@ struct common_params {
     // optional callback for model loading progress and cancellation:
     // called with a progress value between 0.0 and 1.0.
     // return false from callback to abort model loading or true to continue
-    llama_progress_callback load_progress_callback = NULL;
+    gptoss_progress_callback load_progress_callback = NULL;
     void *                  load_progress_callback_user_data = NULL;
 };
 
@@ -524,15 +524,15 @@ bool set_process_priority(enum ggml_sched_priority prio);
 
 #ifdef __GNUC__
 #    if defined(__MINGW32__) && !defined(__clang__)
-#        define LLAMA_COMMON_ATTRIBUTE_FORMAT(...) __attribute__((format(gnu_printf, __VA_ARGS__)))
+#        define GPTOSS_COMMON_ATTRIBUTE_FORMAT(...) __attribute__((format(gnu_printf, __VA_ARGS__)))
 #    else
-#        define LLAMA_COMMON_ATTRIBUTE_FORMAT(...) __attribute__((format(printf, __VA_ARGS__)))
+#        define GPTOSS_COMMON_ATTRIBUTE_FORMAT(...) __attribute__((format(printf, __VA_ARGS__)))
 #    endif
 #else
-#    define LLAMA_COMMON_ATTRIBUTE_FORMAT(...)
+#    define GPTOSS_COMMON_ATTRIBUTE_FORMAT(...)
 #endif
 
-LLAMA_COMMON_ATTRIBUTE_FORMAT(1, 2)
+GPTOSS_COMMON_ATTRIBUTE_FORMAT(1, 2)
 std::string string_format(const char * fmt, ...);
 
 std::string string_strip(const std::string & str);
@@ -587,13 +587,13 @@ bool string_ends_with(const std::string_view & str, const std::string_view & suf
 bool string_remove_suffix(std::string & str, const std::string_view & suffix);
 size_t string_find_partial_stop(const std::string_view & str, const std::string_view & stop);
 
-bool string_parse_kv_override(const char * data, std::vector<llama_model_kv_override> & overrides);
+bool string_parse_kv_override(const char * data, std::vector<gptoss_model_kv_override> & overrides);
 void string_process_escapes(std::string & input);
 
 std::string string_from(bool value);
 std::string string_from(const std::vector<int> & values);
-std::string string_from(const struct llama_context * ctx, const std::vector<llama_token> & tokens);
-std::string string_from(const struct llama_context * ctx, const struct llama_batch & batch);
+std::string string_from(const struct gptoss_context * ctx, const std::vector<gptoss_token> & tokens);
+std::string string_from(const struct gptoss_context * ctx, const struct gptoss_batch & batch);
 
 //
 // Filesystem utils
@@ -611,20 +611,20 @@ std::string fs_get_cache_file(const std::string & filename);
 
 // note: defines object's lifetime
 struct common_init_result {
-    llama_model_ptr   model;
-    llama_context_ptr context;
+    gptoss_model_ptr   model;
+    gptoss_context_ptr context;
 
-    std::vector<llama_adapter_lora_ptr> lora;
+    std::vector<gptoss_adapter_lora_ptr> lora;
 };
 
 struct common_init_result     common_init_from_params(common_params & params);
 
-struct llama_model_params     common_model_params_to_llama  (      common_params & params);
-struct llama_context_params   common_context_params_to_llama(const common_params & params);
+struct gptoss_model_params     common_model_params_to_gptoss  (      common_params & params);
+struct gptoss_context_params   common_context_params_to_gptoss(const common_params & params);
 struct ggml_threadpool_params ggml_threadpool_params_from_cpu_params(const cpu_params & params);
 
 // clear LoRA adapters from context, then apply new list of adapters
-void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adapter_lora_info> & lora);
+void common_set_adapter_lora(struct gptoss_context * ctx, std::vector<common_adapter_lora_info> & lora);
 
 std::string                   get_model_endpoint();
 
@@ -632,13 +632,13 @@ std::string                   get_model_endpoint();
 // Batch utils
 //
 
-void common_batch_clear(struct llama_batch & batch);
+void common_batch_clear(struct gptoss_batch & batch);
 
 void common_batch_add(
-                 struct llama_batch & batch,
-                        llama_token   id,
-                          llama_pos   pos,
-    const std::vector<llama_seq_id> & seq_ids,
+                 struct gptoss_batch & batch,
+                        gptoss_token   id,
+                          gptoss_pos   pos,
+    const std::vector<gptoss_seq_id> & seq_ids,
                                bool   logits);
 
 //
@@ -646,10 +646,10 @@ void common_batch_add(
 //
 
 // longest common prefix
-size_t common_lcp(const llama_tokens & a, const llama_tokens & b);
+size_t common_lcp(const gptoss_tokens & a, const gptoss_tokens & b);
 
 // longet common subsequence
-size_t common_lcs(const llama_tokens & a, const llama_tokens & b);
+size_t common_lcs(const gptoss_tokens & a, const gptoss_tokens & b);
 
 //
 // Vocab utils
@@ -657,14 +657,14 @@ size_t common_lcs(const llama_tokens & a, const llama_tokens & b);
 
 // tokenizes a string into a vector of tokens
 // should work similar to Python's `tokenizer.encode`
-std::vector<llama_token> common_tokenize(
-  const struct llama_context * ctx,
+std::vector<gptoss_token> common_tokenize(
+  const struct gptoss_context * ctx,
            const std::string & text,
                         bool   add_special,
                         bool   parse_special = false);
 
-std::vector<llama_token> common_tokenize(
-    const struct llama_vocab * vocab,
+std::vector<gptoss_token> common_tokenize(
+    const struct gptoss_vocab * vocab,
            const std::string & text,
                         bool   add_special,
                         bool   parse_special = false);
@@ -672,26 +672,26 @@ std::vector<llama_token> common_tokenize(
 // tokenizes a token into a piece, optionally renders special/control tokens
 // should work similar to Python's `tokenizer.id_to_piece`
 std::string common_token_to_piece(
-        const struct llama_context * ctx,
-                       llama_token   token,
+        const struct gptoss_context * ctx,
+                       gptoss_token   token,
                        bool          special = true);
 
 std::string common_token_to_piece(
-          const struct llama_vocab * vocab,
-                       llama_token   token,
+          const struct gptoss_vocab * vocab,
+                       gptoss_token   token,
                        bool          special = true);
 
 // detokenizes a vector of tokens into a string
 // should work similar to Python's `tokenizer.decode`
 // optionally renders special/control tokens
 std::string common_detokenize(
-            const struct llama_context * ctx,
-        const std::vector<llama_token> & tokens,
+            const struct gptoss_context * ctx,
+        const std::vector<gptoss_token> & tokens,
                                   bool   special = true);
 
 std::string common_detokenize(
-              const struct llama_vocab * vocab,
-        const std::vector<llama_token> & tokens,
+              const struct gptoss_vocab * vocab,
+        const std::vector<gptoss_token> & tokens,
                                   bool   special = true);
 
 //
@@ -746,7 +746,7 @@ static std::string llm_ffn_exps_block_regex(int idx) {
     return string_format("blk\\.%d%s", idx, LLM_FFN_EXPS_REGEX);
 }
 
-static llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
+static gptoss_model_tensor_buft_override llm_ffn_exps_cpu_override() {
     return { LLM_FFN_EXPS_REGEX, ggml_backend_cpu_buffer_type() };
 }
 
@@ -754,7 +754,7 @@ static llama_model_tensor_buft_override llm_ffn_exps_cpu_override() {
 // training utils
 //
 
-ggml_opt_dataset_t common_opt_dataset_init(struct llama_context * ctx, const std::vector<llama_token> & tokens, int64_t stride);
+ggml_opt_dataset_t common_opt_dataset_init(struct gptoss_context * ctx, const std::vector<gptoss_token> & tokens, int64_t stride);
 
 // "adamw" or "sgd" (case insensitive)
 enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
