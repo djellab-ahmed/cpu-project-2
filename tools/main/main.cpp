@@ -3,7 +3,7 @@
 #include "console.h"
 #include "log.h"
 #include "sampling.h"
-#include "llama.h"
+#include "gptoss.h"
 #include "chat.h"
 
 #include <cstdio>
@@ -31,13 +31,13 @@
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
 
-static llama_context           ** g_ctx;
-static llama_model             ** g_model;
+static gptoss_context           ** g_ctx;
+static gptoss_model             ** g_model;
 static common_sampler          ** g_smpl;
 static common_params            * g_params;
-static std::vector<llama_token> * g_input_tokens;
+static std::vector<gptoss_token> * g_input_tokens;
 static std::ostringstream       * g_output_ss;
-static std::vector<llama_token> * g_output_tokens;
+static std::vector<gptoss_token> * g_output_tokens;
 static bool is_interacting  = false;
 static bool need_insert_eot = false;
 
@@ -86,7 +86,7 @@ static void sigint_handler(int signo) {
 int main(int argc, char ** argv) {
     common_params params;
     g_params = &params;
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_MAIN, print_usage)) {
+    if (!common_params_parse(argc, argv, params, GPTOSS_EXAMPLE_MAIN, print_usage)) {
         return 1;
     }
 
@@ -120,13 +120,13 @@ int main(int argc, char ** argv) {
         LOG_WRN("%s: warning: scaling RoPE frequency by %g.\n", __func__, params.rope_freq_scale);
     }
 
-    LOG_INF("%s: llama backend init\n", __func__);
+    LOG_INF("%s: gptoss backend init\n", __func__);
 
-    llama_backend_init();
-    llama_numa_init(params.numa);
+    gptoss_backend_init();
+    gptoss_numa_init(params.numa);
 
-    llama_model * model = nullptr;
-    llama_context * ctx = nullptr;
+    gptoss_model * model = nullptr;
+    gptoss_context * ctx = nullptr;
     common_sampler * smpl = nullptr;
 
     g_model = &model;
@@ -137,22 +137,22 @@ int main(int argc, char ** argv) {
 
     // load the model and apply lora adapter, if any
     LOG_INF("%s: load the model and apply lora adapter, if any\n", __func__);
-    common_init_result llama_init = common_init_from_params(params);
+    common_init_result gptoss_init = common_init_from_params(params);
 
-    model = llama_init.model.get();
-    ctx = llama_init.context.get();
+    model = gptoss_init.model.get();
+    ctx = gptoss_init.context.get();
 
     if (model == NULL) {
         LOG_ERR("%s: error: unable to load model\n", __func__);
         return 1;
     }
 
-    auto * mem = llama_get_memory(ctx);
+    auto * mem = gptoss_get_memory(ctx);
 
-    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
     auto chat_templates = common_chat_templates_init(model, params.chat_template);
 
-    LOG_INF("%s: llama threadpool init, n_threads = %d\n", __func__, (int) params.cpuparams.n_threads);
+    LOG_INF("%s: gptoss threadpool init, n_threads = %d\n", __func__, (int) params.cpuparams.n_threads);
 
     auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!cpu_dev) {
@@ -188,10 +188,10 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    llama_attach_threadpool(ctx, threadpool, threadpool_batch);
+    gptoss_attach_threadpool(ctx, threadpool, threadpool_batch);
 
-    const int n_ctx_train = llama_model_n_ctx_train(model);
-    const int n_ctx = llama_n_ctx(ctx);
+    const int n_ctx_train = gptoss_model_n_ctx_train(model);
+    const int n_ctx = gptoss_n_ctx(ctx);
 
     if (n_ctx > n_ctx_train) {
         LOG_WRN("%s: model was trained on only %d context tokens (%d specified)\n", __func__, n_ctx_train, n_ctx);
@@ -234,7 +234,7 @@ int main(int argc, char ** argv) {
     }
 
     std::string path_session = params.path_prompt_cache;
-    std::vector<llama_token> session_tokens;
+    std::vector<gptoss_token> session_tokens;
 
     if (!path_session.empty()) {
         LOG_INF("%s: attempting to load saved session from '%s'\n", __func__, path_session.c_str());
@@ -246,7 +246,7 @@ int main(int argc, char ** argv) {
             // The file exists and is not empty
             session_tokens.resize(n_ctx);
             size_t n_token_count_out = 0;
-            if (!llama_state_load_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.capacity(), &n_token_count_out)) {
+            if (!gptoss_state_load_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.capacity(), &n_token_count_out)) {
                 LOG_ERR("%s: failed to load session file '%s'\n", __func__, path_session.c_str());
                 return 1;
             }
@@ -255,14 +255,14 @@ int main(int argc, char ** argv) {
         }
     }
 
-    const bool add_bos = llama_vocab_get_add_bos(vocab) && !params.use_jinja;
-    if (!llama_model_has_encoder(model)) {
-        GGML_ASSERT(!llama_vocab_get_add_eos(vocab));
+    const bool add_bos = gptoss_vocab_get_add_bos(vocab) && !params.use_jinja;
+    if (!gptoss_model_has_encoder(model)) {
+        GGML_ASSERT(!gptoss_vocab_get_add_eos(vocab));
     }
 
     LOG_DBG("n_ctx: %d, add_bos: %d\n", n_ctx, add_bos);
 
-    std::vector<llama_token> embd_inp;
+    std::vector<gptoss_token> embd_inp;
 
     bool waiting_for_first_input = false;
     auto chat_add_and_format = [&chat_msgs, &chat_templates](const std::string & role, const std::string & content) {
@@ -318,7 +318,7 @@ int main(int argc, char ** argv) {
     // Should not run without any tokens
     if (!waiting_for_first_input && embd_inp.empty()) {
         if (add_bos) {
-            embd_inp.push_back(llama_vocab_bos(vocab));
+            embd_inp.push_back(gptoss_vocab_bos(vocab));
             LOG_WRN("embd_inp was considered empty and bos was added: %s\n", string_from(ctx, embd_inp).c_str());
         } else {
             LOG_ERR("input is empty\n");
@@ -335,7 +335,7 @@ int main(int argc, char ** argv) {
     // debug message about similarity of saved session, if applicable
     size_t n_matching_session_tokens = 0;
     if (!session_tokens.empty()) {
-        for (llama_token id : session_tokens) {
+        for (gptoss_token id : session_tokens) {
             if (n_matching_session_tokens >= embd_inp.size() || id != embd_inp[n_matching_session_tokens]) {
                 break;
             }
@@ -354,7 +354,7 @@ int main(int argc, char ** argv) {
         }
 
         // remove any "future" tokens that we might have inherited from the previous session
-        llama_memory_seq_rm(mem, -1, n_matching_session_tokens, -1);
+        gptoss_memory_seq_rm(mem, -1, n_matching_session_tokens, -1);
     }
 
     LOG_DBG("recalculate the cached logits (check): embd_inp.size() %zu, n_matching_session_tokens %zu, embd_inp.size() %zu, session_tokens.size() %zu\n",
@@ -532,10 +532,10 @@ int main(int argc, char ** argv) {
     console::set_display(console::prompt);
     display = params.display_prompt;
 
-    std::vector<llama_token> embd;
+    std::vector<gptoss_token> embd;
 
     // single-token antiprompts
-    std::vector<llama_token> antiprompt_token;
+    std::vector<gptoss_token> antiprompt_token;
 
     for (const std::string & antiprompt : params.antiprompt) {
         auto ids = ::common_tokenize(ctx, antiprompt, false, true);
@@ -544,18 +544,18 @@ int main(int argc, char ** argv) {
         }
     }
 
-    if (llama_model_has_encoder(model)) {
+    if (gptoss_model_has_encoder(model)) {
         int enc_input_size = embd_inp.size();
-        llama_token * enc_input_buf = embd_inp.data();
+        gptoss_token * enc_input_buf = embd_inp.data();
 
-        if (llama_encode(ctx, llama_batch_get_one(enc_input_buf, enc_input_size))) {
+        if (gptoss_encode(ctx, gptoss_batch_get_one(enc_input_buf, enc_input_size))) {
             LOG_ERR("%s : failed to eval\n", __func__);
             return 1;
         }
 
-        llama_token decoder_start_token_id = llama_model_decoder_start_token(model);
-        if (decoder_start_token_id == LLAMA_TOKEN_NULL) {
-            decoder_start_token_id = llama_vocab_bos(vocab);
+        gptoss_token decoder_start_token_id = gptoss_model_decoder_start_token(model);
+        if (decoder_start_token_id == GPTOSS_TOKEN_NULL) {
+            decoder_start_token_id = gptoss_vocab_bos(vocab);
         }
 
         embd_inp.clear();
@@ -602,8 +602,8 @@ int main(int argc, char ** argv) {
                     LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
                             n_past, n_left, n_ctx, params.n_keep, n_discard);
 
-                    llama_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
-                    llama_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
+                    gptoss_memory_seq_rm (mem, 0, params.n_keep            , params.n_keep + n_discard);
+                    gptoss_memory_seq_add(mem, 0, params.n_keep + n_discard, n_past, -n_discard);
 
                     n_past -= n_discard;
 
@@ -626,9 +626,9 @@ int main(int argc, char ** argv) {
                     LOG_DBG("div:   [%6d, %6d] / %6d -> [%6d, %6d]\n", ga_i + ib*bd, ga_i + ib*bd + ga_w, ga_n, (ga_i + ib*bd)/ga_n, (ga_i + ib*bd + ga_w)/ga_n);
                     LOG_DBG("shift: [%6d, %6d] + %6d -> [%6d, %6d]\n", ga_i + ib*bd + ga_w, n_past + ib*bd, dd, ga_i + ib*bd + ga_w + dd, n_past + ib*bd + dd);
 
-                    llama_memory_seq_add(mem, 0, ga_i,                n_past,              ib*bd);
-                    llama_memory_seq_div(mem, 0, ga_i + ib*bd,        ga_i + ib*bd + ga_w, ga_n);
-                    llama_memory_seq_add(mem, 0, ga_i + ib*bd + ga_w, n_past + ib*bd,      dd);
+                    gptoss_memory_seq_add(mem, 0, ga_i,                n_past,              ib*bd);
+                    gptoss_memory_seq_div(mem, 0, ga_i + ib*bd,        ga_i + ib*bd + ga_w, ga_n);
+                    gptoss_memory_seq_add(mem, 0, ga_i + ib*bd + ga_w, n_past + ib*bd,      dd);
 
                     n_past -= bd;
 
@@ -668,7 +668,7 @@ int main(int argc, char ** argv) {
 
                 LOG_DBG("eval: %s\n", string_from(ctx, embd).c_str());
 
-                if (llama_decode(ctx, llama_batch_get_one(&embd[i], n_eval))) {
+                if (gptoss_decode(ctx, gptoss_batch_get_one(&embd[i], n_eval))) {
                     LOG_ERR("%s : failed to eval\n", __func__);
                     return 1;
                 }
@@ -694,12 +694,12 @@ int main(int argc, char ** argv) {
             // optionally save the session on first sample (for faster prompt loading next time)
             if (!path_session.empty() && need_to_save_session && !params.prompt_cache_ro) {
                 need_to_save_session = false;
-                llama_state_save_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
+                gptoss_state_save_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
 
                 LOG_DBG("saved session to %s\n", path_session.c_str());
             }
 
-            const llama_token id = common_sampler_sample(smpl, ctx, -1);
+            const gptoss_token id = common_sampler_sample(smpl, ctx, -1);
 
             common_sampler_accept(smpl, id, /* accept_grammar= */ true);
 
@@ -707,7 +707,7 @@ int main(int argc, char ** argv) {
 
             embd.push_back(id);
 
-            if (params.conversation_mode && !waiting_for_first_input && !llama_vocab_is_eog(vocab, id)) {
+            if (params.conversation_mode && !waiting_for_first_input && !gptoss_vocab_is_eog(vocab, id)) {
                 assistant_ss << common_token_to_piece(ctx, id, false);
             }
 
@@ -791,7 +791,7 @@ int main(int argc, char ** argv) {
                 // check for reverse prompt using special tokens
                 // avoid calling common_sampler_last() if last_output is empty
                 if (!last_output.empty()) {
-                    llama_token last_token = common_sampler_last(smpl);
+                    gptoss_token last_token = common_sampler_last(smpl);
                     for (auto token : antiprompt_token) {
                         if (token == last_token) {
                             if (params.interactive) {
@@ -809,7 +809,7 @@ int main(int argc, char ** argv) {
             }
 
             // deal with end of generation tokens in interactive mode
-            if (!waiting_for_first_input && llama_vocab_is_eog(vocab, common_sampler_last(smpl))) {
+            if (!waiting_for_first_input && gptoss_vocab_is_eog(vocab, common_sampler_last(smpl))) {
                 LOG_DBG("found an EOG token\n");
 
                 if (params.interactive) {
@@ -844,7 +844,7 @@ int main(int argc, char ** argv) {
 
                 if (params.input_prefix_bos) {
                     LOG_DBG("adding input prefix BOS token\n");
-                    embd_inp.push_back(llama_vocab_bos(vocab));
+                    embd_inp.push_back(gptoss_vocab_bos(vocab));
                 }
 
                 std::string buffer;
@@ -911,8 +911,8 @@ int main(int argc, char ** argv) {
 
                     // if user stop generation mid-way, we must add EOT to finish model's last response
                     if (need_insert_eot && format_chat) {
-                        llama_token eot = llama_vocab_eot(vocab);
-                        embd_inp.push_back(eot == LLAMA_TOKEN_NULL ? llama_vocab_eos(vocab) : eot);
+                        gptoss_token eot = gptoss_vocab_eot(vocab);
+                        embd_inp.push_back(eot == GPTOSS_TOKEN_NULL ? gptoss_vocab_eos(vocab) : eot);
                         need_insert_eot = false;
                     }
 
@@ -925,7 +925,7 @@ int main(int argc, char ** argv) {
                     }
 
                     for (size_t i = original_size; i < embd_inp.size(); ++i) {
-                        const llama_token token = embd_inp[i];
+                        const gptoss_token token = embd_inp[i];
                         const std::string token_str = common_token_to_piece(ctx, token);
                         output_tokens.push_back(token);
                         output_ss << token_str;
@@ -960,7 +960,7 @@ int main(int argc, char ** argv) {
         }
 
         // end of generation
-        if (!embd.empty() && llama_vocab_is_eog(vocab, embd.back()) && !(params.interactive)) {
+        if (!embd.empty() && gptoss_vocab_is_eog(vocab, embd.back()) && !(params.interactive)) {
             LOG(" [end of text]\n");
             break;
         }
@@ -975,7 +975,7 @@ int main(int argc, char ** argv) {
 
     if (!path_session.empty() && params.prompt_cache_all && !params.prompt_cache_ro) {
         LOG("\n%s: saving final output to session file '%s'\n", __func__, path_session.c_str());
-        llama_state_save_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
+        gptoss_state_save_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
     }
 
     LOG("\n\n");
@@ -983,7 +983,7 @@ int main(int argc, char ** argv) {
 
     common_sampler_free(smpl);
 
-    llama_backend_free();
+    gptoss_backend_free();
 
     ggml_threadpool_free_fn(threadpool);
     ggml_threadpool_free_fn(threadpool_batch);

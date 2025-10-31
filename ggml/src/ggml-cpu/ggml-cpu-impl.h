@@ -74,7 +74,7 @@ struct ggml_compute_params {
 
 #if defined(__ARM_NEON)
 
-// ref: https://github.com/ggml-org/llama.cpp/pull/5404
+// ref: https://github.com/ggml-org/gptoss.cpp/pull/5404
 #ifdef _MSC_VER
 #define ggml_vld1q_u32(w,x,y,z) { ((w) + ((uint64_t)(x) << 32)), ((y) + ((uint64_t)(z) << 32)) }
 #else
@@ -481,7 +481,7 @@ inline static int16x8_t vec_padd_s16(int16x8_t a, int16x8_t b) {
 }
 
 /**
- * @see https://github.com/ggml-org/llama.cpp/pull/14037
+ * @see https://github.com/ggml-org/gptoss.cpp/pull/14037
  */
 inline static float vec_hsum_f32x4(float32x4_t v) {
     float32x4_t v_temp = v + vec_reve(v);

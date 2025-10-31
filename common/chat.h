@@ -102,12 +102,12 @@ enum common_chat_format {
     COMMON_CHAT_FORMAT_GENERIC,
     COMMON_CHAT_FORMAT_MISTRAL_NEMO,
     COMMON_CHAT_FORMAT_MAGISTRAL,
-    COMMON_CHAT_FORMAT_LLAMA_3_X,
-    COMMON_CHAT_FORMAT_LLAMA_3_X_WITH_BUILTIN_TOOLS,
+    COMMON_CHAT_FORMAT_GPTOSS_3_X,
+    COMMON_CHAT_FORMAT_GPTOSS_3_X_WITH_BUILTIN_TOOLS,
     COMMON_CHAT_FORMAT_DEEPSEEK_R1,
     COMMON_CHAT_FORMAT_FIREFUNCTION_V2,
     COMMON_CHAT_FORMAT_FUNCTIONARY_V3_2,
-    COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_LLAMA_3_1,
+    COMMON_CHAT_FORMAT_FUNCTIONARY_V3_1_GPTOSS_3_1,
     COMMON_CHAT_FORMAT_DEEPSEEK_V3_1,
     COMMON_CHAT_FORMAT_HERMES_2_PRO,
     COMMON_CHAT_FORMAT_COMMAND_R7B,
@@ -168,7 +168,7 @@ struct common_chat_templates_deleter { void operator()(common_chat_templates * t
 typedef std::unique_ptr<struct common_chat_templates, common_chat_templates_deleter> common_chat_templates_ptr;
 
 common_chat_templates_ptr common_chat_templates_init(
-                                    const struct llama_model * model,
+                                    const struct gptoss_model * model,
                                            const std::string & chat_template_override,
                                            const std::string & bos_token_override = "",
                                            const std::string & eos_token_override = "");

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14) # for add_link_options and implicit target directories.
-project("llama.cpp" C CXX)
+project("gptoss.cpp" C CXX)
 include(CheckIncludeFileCXX)
 
 #set(CMAKE_WARN_DEPRECATED YES)
@@ -21,22 +21,22 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    set(LLAMA_STANDALONE ON)
+    set(GPTOSS_STANDALONE ON)
 
     include(git-vars)
 
     # configure project version
     # TODO
 else()
-    set(LLAMA_STANDALONE OFF)
+    set(GPTOSS_STANDALONE OFF)
 endif()
 
-option(LLAMA_USE_SYSTEM_GGML "Use system libggml" OFF)
+option(GPTOSS_USE_SYSTEM_GGML "Use system libggml" OFF)
 
 if (EMSCRIPTEN)
     set(BUILD_SHARED_LIBS_DEFAULT OFF)
 
-    option(LLAMA_WASM_SINGLE_FILE "llama: embed WASM inside the generated llama.js" ON)
+    option(GPTOSS_WASM_SINGLE_FILE "gptoss: embed WASM inside the generated gptoss.js" ON)
 else()
     if (MINGW)
         set(BUILD_SHARED_LIBS_DEFAULT OFF)
@@ -59,9 +59,9 @@ if (MSVC)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    set(LLAMA_TOOLS_INSTALL_DEFAULT OFF)
+    set(GPTOSS_TOOLS_INSTALL_DEFAULT OFF)
 else()
-    set(LLAMA_TOOLS_INSTALL_DEFAULT ${LLAMA_STANDALONE})
+    set(GPTOSS_TOOLS_INSTALL_DEFAULT ${GPTOSS_STANDALONE})
 endif()
 
 #
@@ -69,51 +69,51 @@ endif()
 #
 
 # debug
-option(LLAMA_ALL_WARNINGS           "llama: enable all compiler warnings"                   ON)
-option(LLAMA_ALL_WARNINGS_3RD_PARTY "llama: enable all compiler warnings in 3rd party libs" OFF)
+option(GPTOSS_ALL_WARNINGS           "gptoss: enable all compiler warnings"                   ON)
+option(GPTOSS_ALL_WARNINGS_3RD_PARTY "gptoss: enable all compiler warnings in 3rd party libs" OFF)
 
 # build
-option(LLAMA_FATAL_WARNINGS "llama: enable -Werror flag" OFF)
+option(GPTOSS_FATAL_WARNINGS "gptoss: enable -Werror flag" OFF)
 
 # sanitizers
-option(LLAMA_SANITIZE_THREAD    "llama: enable thread sanitizer"    OFF)
-option(LLAMA_SANITIZE_ADDRESS   "llama: enable address sanitizer"   OFF)
-option(LLAMA_SANITIZE_UNDEFINED "llama: enable undefined sanitizer" OFF)
+option(GPTOSS_SANITIZE_THREAD    "gptoss: enable thread sanitizer"    OFF)
+option(GPTOSS_SANITIZE_ADDRESS   "gptoss: enable address sanitizer"   OFF)
+option(GPTOSS_SANITIZE_UNDEFINED "gptoss: enable undefined sanitizer" OFF)
 
 # utils
-option(LLAMA_BUILD_COMMON "llama: build common utils library" ${LLAMA_STANDALONE})
+option(GPTOSS_BUILD_COMMON "gptoss: build common utils library" ${GPTOSS_STANDALONE})
 
 # extra artifacts
-option(LLAMA_BUILD_TESTS    "llama: build tests"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_TOOLS    "llama: build tools"          ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_EXAMPLES "llama: build examples"       ${LLAMA_STANDALONE})
-option(LLAMA_BUILD_SERVER   "llama: build server example" ${LLAMA_STANDALONE})
-option(LLAMA_TOOLS_INSTALL  "llama: install tools"        ${LLAMA_TOOLS_INSTALL_DEFAULT})
+option(GPTOSS_BUILD_TESTS    "gptoss: build tests"          ${GPTOSS_STANDALONE})
+option(GPTOSS_BUILD_TOOLS    "gptoss: build tools"          ${GPTOSS_STANDALONE})
+option(GPTOSS_BUILD_EXAMPLES "gptoss: build examples"       ${GPTOSS_STANDALONE})
+option(GPTOSS_BUILD_SERVER   "gptoss: build server example" ${GPTOSS_STANDALONE})
+option(GPTOSS_TOOLS_INSTALL  "gptoss: install tools"        ${GPTOSS_TOOLS_INSTALL_DEFAULT})
 
 # 3rd party libs
-option(LLAMA_CURL       "llama: use libcurl to download model from an URL" ON)
-option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" OFF)
-option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
+option(GPTOSS_CURL       "gptoss: use libcurl to download model from an URL" ON)
+option(GPTOSS_OPENSSL    "gptoss: use openssl to support HTTPS" OFF)
+option(GPTOSS_LLGUIDANCE "gptoss-common: include LLGuidance library for structured output in common utils" OFF)
 
 # Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/common.cmake)
 
-if (NOT DEFINED LLAMA_BUILD_NUMBER)
-    set(LLAMA_BUILD_NUMBER        ${BUILD_NUMBER})
+if (NOT DEFINED GPTOSS_BUILD_NUMBER)
+    set(GPTOSS_BUILD_NUMBER        ${BUILD_NUMBER})
 endif()
-if (NOT DEFINED LLAMA_BUILD_COMMIT)
-    set(LLAMA_BUILD_COMMIT        ${BUILD_COMMIT})
+if (NOT DEFINED GPTOSS_BUILD_COMMIT)
+    set(GPTOSS_BUILD_COMMIT        ${BUILD_COMMIT})
 endif()
-set(LLAMA_INSTALL_VERSION 0.0.${LLAMA_BUILD_NUMBER})
+set(GPTOSS_INSTALL_VERSION 0.0.${GPTOSS_BUILD_NUMBER})
 
 # override ggml options
-set(GGML_ALL_WARNINGS   ${LLAMA_ALL_WARNINGS})
-set(GGML_FATAL_WARNINGS ${LLAMA_FATAL_WARNINGS})
+set(GGML_ALL_WARNINGS   ${GPTOSS_ALL_WARNINGS})
+set(GGML_FATAL_WARNINGS ${GPTOSS_FATAL_WARNINGS})
 
 # change the default for these ggml options
-if (NOT DEFINED GGML_LLAMAFILE)
-    set(GGML_LLAMAFILE_DEFAULT ON)
+if (NOT DEFINED GGML_GPTOSSFILE)
+    set(GGML_GPTOSSFILE_DEFAULT ON)
 endif()
 
 if (NOT DEFINED GGML_CUDA_GRAPHS)
@@ -121,39 +121,39 @@ if (NOT DEFINED GGML_CUDA_GRAPHS)
 endif()
 
 # transition helpers
-function (llama_option_depr TYPE OLD NEW)
+function (gptoss_option_depr TYPE OLD NEW)
     if (${OLD})
         message(${TYPE} "${OLD} is deprecated and will be removed in the future.\nUse ${NEW} instead\n")
         set(${NEW} ON PARENT_SCOPE)
     endif()
 endfunction()
 
-llama_option_depr(FATAL_ERROR LLAMA_CUBLAS              GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_CUDA                GGML_CUDA)
-llama_option_depr(WARNING     LLAMA_METAL               GGML_METAL)
-llama_option_depr(WARNING     LLAMA_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
-llama_option_depr(WARNING     LLAMA_NATIVE              GGML_NATIVE)
-llama_option_depr(WARNING     LLAMA_RPC                 GGML_RPC)
-llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
-llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
-llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
+gptoss_option_depr(FATAL_ERROR GPTOSS_CUBLAS              GGML_CUDA)
+gptoss_option_depr(WARNING     GPTOSS_CUDA                GGML_CUDA)
+gptoss_option_depr(WARNING     GPTOSS_METAL               GGML_METAL)
+gptoss_option_depr(WARNING     GPTOSS_METAL_EMBED_LIBRARY GGML_METAL_EMBED_LIBRARY)
+gptoss_option_depr(WARNING     GPTOSS_NATIVE              GGML_NATIVE)
+gptoss_option_depr(WARNING     GPTOSS_RPC                 GGML_RPC)
+gptoss_option_depr(WARNING     GPTOSS_SYCL                GGML_SYCL)
+gptoss_option_depr(WARNING     GPTOSS_SYCL_F16            GGML_SYCL_F16)
+gptoss_option_depr(WARNING     GPTOSS_CANN                GGML_CANN)
 
 if (NOT MSVC)
-    if (LLAMA_SANITIZE_THREAD)
+    if (GPTOSS_SANITIZE_THREAD)
         message(STATUS "Using -fsanitize=thread")
 
         add_compile_options(-fsanitize=thread)
         link_libraries     (-fsanitize=thread)
     endif()
 
-    if (LLAMA_SANITIZE_ADDRESS)
+    if (GPTOSS_SANITIZE_ADDRESS)
         message(STATUS "Using -fsanitize=address")
 
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         link_libraries     (-fsanitize=address)
     endif()
 
-    if (LLAMA_SANITIZE_UNDEFINED)
+    if (GPTOSS_SANITIZE_UNDEFINED)
         message(STATUS "Using -fsanitize=undefined")
 
         add_compile_options(-fsanitize=undefined)
@@ -165,15 +165,15 @@ endif()
 # 3rd-party
 #
 
-if (LLAMA_USE_SYSTEM_GGML)
+if (GPTOSS_USE_SYSTEM_GGML)
     message(STATUS "Using system-provided libggml, skipping ggml build")
     find_package(ggml REQUIRED)
     add_library(ggml ALIAS ggml::ggml)
 endif()
 
-if (NOT TARGET ggml AND NOT LLAMA_USE_SYSTEM_GGML)
-    set(GGML_BUILD_NUMBER ${LLAMA_BUILD_NUMBER})
-    set(GGML_BUILD_COMMIT ${LLAMA_BUILD_COMMIT})
+if (NOT TARGET ggml AND NOT GPTOSS_USE_SYSTEM_GGML)
+    set(GGML_BUILD_NUMBER ${GPTOSS_BUILD_NUMBER})
+    set(GGML_BUILD_COMMIT ${GPTOSS_BUILD_COMMIT})
     add_subdirectory(ggml)
     # ... otherwise assume ggml is added by a parent CMakeLists.txt
 endif()
@@ -193,26 +193,26 @@ add_subdirectory(src)
 # utils, programs, examples and tests
 #
 
-if (NOT LLAMA_BUILD_COMMON)
-    message(STATUS "LLAMA_BUILD_COMMON is OFF, disabling LLAMA_CURL")
-    set(LLAMA_CURL OFF)
+if (NOT GPTOSS_BUILD_COMMON)
+    message(STATUS "GPTOSS_BUILD_COMMON is OFF, disabling GPTOSS_CURL")
+    set(GPTOSS_CURL OFF)
 endif()
 
-if (LLAMA_BUILD_COMMON)
+if (GPTOSS_BUILD_COMMON)
     add_subdirectory(common)
 endif()
 
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
+if (GPTOSS_BUILD_COMMON AND GPTOSS_BUILD_TESTS AND NOT CMAKE_JS_VERSION)
     include(CTest)
     add_subdirectory(tests)
 endif()
 
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_EXAMPLES)
+if (GPTOSS_BUILD_COMMON AND GPTOSS_BUILD_EXAMPLES)
     add_subdirectory(examples)
     add_subdirectory(pocs)
 endif()
 
-if (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS)
+if (GPTOSS_BUILD_COMMON AND GPTOSS_BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
@@ -223,36 +223,36 @@ endif()
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-set(LLAMA_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
-set(LLAMA_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
-set(LLAMA_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
+set(GPTOSS_INCLUDE_INSTALL_DIR ${CMAKE_INSTALL_INCLUDEDIR} CACHE PATH "Location of header  files")
+set(GPTOSS_LIB_INSTALL_DIR     ${CMAKE_INSTALL_LIBDIR}     CACHE PATH "Location of library files")
+set(GPTOSS_BIN_INSTALL_DIR     ${CMAKE_INSTALL_BINDIR}     CACHE PATH "Location of binary  files")
 
-set(LLAMA_PUBLIC_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/llama.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/llama-cpp.h)
+set(GPTOSS_PUBLIC_HEADERS
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/gptoss.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/gptoss-cpp.h)
 
-set_target_properties(llama
+set_target_properties(gptoss
     PROPERTIES
-        PUBLIC_HEADER "${LLAMA_PUBLIC_HEADERS}")
+        PUBLIC_HEADER "${GPTOSS_PUBLIC_HEADERS}")
 
-install(TARGETS llama LIBRARY PUBLIC_HEADER)
+install(TARGETS gptoss LIBRARY PUBLIC_HEADER)
 
 configure_package_config_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/llama-config.cmake.in
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama
-    PATH_VARS LLAMA_INCLUDE_INSTALL_DIR
-              LLAMA_LIB_INSTALL_DIR
-              LLAMA_BIN_INSTALL_DIR )
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gptoss-config.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/gptoss-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gptoss
+    PATH_VARS GPTOSS_INCLUDE_INSTALL_DIR
+              GPTOSS_LIB_INSTALL_DIR
+              GPTOSS_BIN_INSTALL_DIR )
 
 write_basic_package_version_file(
-        ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-    VERSION ${LLAMA_INSTALL_VERSION}
+        ${CMAKE_CURRENT_BINARY_DIR}/gptoss-version.cmake
+    VERSION ${GPTOSS_INSTALL_VERSION}
     COMPATIBILITY SameMajorVersion)
 
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/llama-config.cmake
-              ${CMAKE_CURRENT_BINARY_DIR}/llama-version.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/llama)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/gptoss-config.cmake
+              ${CMAKE_CURRENT_BINARY_DIR}/gptoss-version.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/gptoss)
 
 install(
     FILES convert_hf_to_gguf.py
@@ -266,9 +266,9 @@ install(
         WORLD_EXECUTE
     DESTINATION ${CMAKE_INSTALL_BINDIR})
 
-configure_file(cmake/llama.pc.in
-        "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
+configure_file(cmake/gptoss.pc.in
+        "${CMAKE_CURRENT_BINARY_DIR}/gptoss.pc"
         @ONLY)
 
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/llama.pc"
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/gptoss.pc"
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)

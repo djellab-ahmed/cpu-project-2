@@ -35,7 +35,7 @@ struct chat_template_caps {
     bool supports_system_role = false;
     bool supports_parallel_tool_calls = false;
     bool supports_tool_call_id = false;
-    // meta-llama/Llama-3.1-8B-Instruct expects arguments to be an object.
+    // meta-gptoss/Gptoss-3.1-8B-Instruct expects arguments to be an object.
     // Most other templates (and OpenAI's API) expect the arguments object to be stringified.
     bool requires_object_arguments = false;
     // CohereForAI/c4ai-command-r-plus simple variant
