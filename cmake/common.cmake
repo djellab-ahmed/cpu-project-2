@@ -1,7 +1,7 @@
 include("ggml/cmake/common.cmake")
 
-function(llama_add_compile_flags)
-    if (LLAMA_FATAL_WARNINGS)
+function(gptoss_add_compile_flags)
+    if (GPTOSS_FATAL_WARNINGS)
         if (CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
             list(APPEND C_FLAGS   -Werror)
             list(APPEND CXX_FLAGS -Werror)
@@ -10,7 +10,7 @@ function(llama_add_compile_flags)
         endif()
     endif()
 
-    if (LLAMA_ALL_WARNINGS)
+    if (GPTOSS_ALL_WARNINGS)
         if (NOT MSVC)
             list(APPEND C_FLAGS -Wshadow -Wstrict-prototypes -Wpointer-arith -Wmissing-prototypes
                                 -Werror=implicit-int -Werror=implicit-function-declaration)
