@@ -1744,7 +1744,7 @@ void ggml_compute_forward_repeat(
                 ggml_compute_forward_repeat_f32(params, dst);
             } break;
         // TODO: templateify the implemenation and support for I64
-        //       ref https://github.com/ggml-org/llama.cpp/pull/14274#discussion_r2169492225
+        //       ref https://github.com/ggml-org/gptoss.cpp/pull/14274#discussion_r2169492225
         //case GGML_TYPE_I64:
         //    {
         //        ggml_compute_forward_repeat_i64(params, dst);
@@ -5438,7 +5438,7 @@ static float rope_yarn_ramp(const float low, const float high, const int i0) {
     return 1 - MIN(1, MAX(0, y));
 }
 
-// YaRN algorithm based on LlamaYaRNScaledRotaryEmbedding.py from https://github.com/jquesnelle/yarn
+// YaRN algorithm based on GptossYaRNScaledRotaryEmbedding.py from https://github.com/jquesnelle/yarn
 // MIT licensed. Copyright (c) 2023 Jeffrey Quesnelle and Bowen Peng.
 static void rope_yarn(
     float theta_extrap, float freq_scale, float corr_dims[2], int64_t i0, float ext_factor, float mscale,
@@ -5460,7 +5460,7 @@ static void rope_yarn(
 static void ggml_rope_cache_init(
      float theta_base, float freq_scale, const float * freq_factors, float corr_dims[2], int64_t ne0, float ext_factor, float mscale,
      float * cache, float sin_sign, float theta_scale) {
-    // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
+    // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/GptossYaRNScaledRotaryEmbedding.py
     float theta = theta_base;
     for (int64_t i0 = 0; i0 < ne0; i0 += 2) {
         const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
@@ -5477,7 +5477,7 @@ static void ggml_mrope_cache_init(
      float theta_base_t, float theta_base_h, float theta_base_w, float theta_base_e, int sections[4], bool indep_sects,
      float freq_scale, const float * freq_factors, float corr_dims[2], int64_t ne0, float ext_factor, float mscale,
      float * cache, float sin_sign, float theta_scale) {
-    // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/LlamaYaRNScaledRotaryEmbedding.py
+    // ref: https://github.com/jquesnelle/yarn/blob/master/scaled_rope/GptossYaRNScaledRotaryEmbedding.py
     float theta_t = theta_base_t;
     float theta_h = theta_base_h;
     float theta_w = theta_base_w;

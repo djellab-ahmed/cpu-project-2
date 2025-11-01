@@ -102,8 +102,8 @@ else()
 endif()
 
 # defaults
-if (NOT GGML_LLAMAFILE_DEFAULT)
-    set(GGML_LLAMAFILE_DEFAULT OFF)
+if (NOT GGML_GPTOSSFILE_DEFAULT)
+    set(GGML_GPTOSSFILE_DEFAULT OFF)
 endif()
 
 if (NOT GGML_CUDA_GRAPHS_DEFAULT)
@@ -188,7 +188,7 @@ option(GGML_ACCELERATE                      "ggml: enable Accelerate framework" 
 option(GGML_BLAS                            "ggml: use BLAS"                                  ${GGML_BLAS_DEFAULT})
 set(GGML_BLAS_VENDOR ${GGML_BLAS_VENDOR_DEFAULT} CACHE STRING
                                             "ggml: BLAS library vendor")
-option(GGML_LLAMAFILE                       "ggml: use LLAMAFILE"                             ${GGML_LLAMAFILE_DEFAULT})
+option(GGML_GPTOSSFILE                       "ggml: use GPTOSSFILE"                             ${GGML_GPTOSSFILE_DEFAULT})
 
 option(GGML_CUDA                            "ggml: use CUDA"                                  OFF)
 option(GGML_MUSA                            "ggml: use MUSA"                                  OFF)
@@ -200,7 +200,7 @@ option(GGML_CUDA_NO_PEER_COPY               "ggml: do not use peer to peer copie
 option(GGML_CUDA_NO_VMM                     "ggml: do not try to use CUDA VMM"                OFF)
 option(GGML_CUDA_FA                         "ggml: compile ggml FlashAttention CUDA kernels"  ON)
 option(GGML_CUDA_FA_ALL_QUANTS              "ggml: compile all quants for FlashAttention"     OFF)
-option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (llama.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
+option(GGML_CUDA_GRAPHS                     "ggml: use CUDA graphs (gptoss.cpp only)"          ${GGML_CUDA_GRAPHS_DEFAULT})
 set   (GGML_CUDA_COMPRESSION_MODE "size" CACHE STRING
                                             "ggml: cuda link binary compression mode; requires cuda 12.8+")
 set_property(CACHE GGML_CUDA_COMPRESSION_MODE PROPERTY STRINGS "none;speed;balance;size")
