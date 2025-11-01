@@ -80,12 +80,12 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         endif()
     endif()
 
-    if (GGML_LLAMAFILE)
-        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_LLAMAFILE)
+    if (GGML_GPTOSSFILE)
+        target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_GPTOSSFILE)
 
         list(APPEND GGML_CPU_SOURCES
-                    ggml-cpu/llamafile/sgemm.cpp
-                    ggml-cpu/llamafile/sgemm.h)
+                    ggml-cpu/gptossfile/sgemm.cpp
+                    ggml-cpu/gptossfile/sgemm.h)
     endif()
 
     if (GGML_CPU_HBM)
