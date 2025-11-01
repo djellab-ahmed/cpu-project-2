@@ -36,8 +36,8 @@ extern "C" {
 // on Arm, we use __fp16
 // on x86, we use uint16_t
 //
-// for old CUDA compilers (<= 11), we use uint16_t: ref https://github.com/ggml-org/llama.cpp/pull/10616
-// for     MUSA compilers        , we use uint16_t: ref https://github.com/ggml-org/llama.cpp/pull/11843
+// for old CUDA compilers (<= 11), we use uint16_t: ref https://github.com/ggml-org/gptoss.cpp/pull/10616
+// for     MUSA compilers        , we use uint16_t: ref https://github.com/ggml-org/gptoss.cpp/pull/11843
 //
 #if defined(__ARM_NEON) && !(defined(__CUDACC__) && __CUDACC_VER_MAJOR__ <= 11) && !defined(__MUSACC__)
     #define GGML_CPU_COMPUTE_FP16_TO_FP32(x) neon_compute_fp16_to_fp32(x)
@@ -1143,7 +1143,7 @@ static inline float32x4_t __lzs_f16cx4_load(const ggml_fp16_t * x) {
     }
 
     // note: keep type-cast here to prevent compiler bugs
-    // see: https://github.com/ggml-org/llama.cpp/issues/12846
+    // see: https://github.com/ggml-org/gptoss.cpp/issues/12846
     return vec_xl(0, (const float *)(tmp));
 }
 
@@ -1151,7 +1151,7 @@ static inline void __lzs_f16cx4_store(ggml_fp16_t * x, float32x4_t v_y) {
     float arr[4];
 
     // note: keep type-cast here to prevent compiler bugs
-    // see: https://github.com/ggml-org/llama.cpp/issues/12846
+    // see: https://github.com/ggml-org/gptoss.cpp/issues/12846
     vec_xst(v_y, 0, (float *)(arr));
 
     for (int i = 0; i < 4; i++) {
