@@ -4,6 +4,15 @@
 
 #include "ggml.h"
 
+#if defined(__has_include)
+    #if __has_include(<sys/mman.h>)
+        #include <sys/mman.h>
+    #endif
+    #if __has_include(<unistd.h>)
+        #include <unistd.h>
+    #endif
+#endif
+
 #include <cstring>
 #include <climits>
 #include <stdexcept>
@@ -269,6 +278,17 @@ void gptoss_file::write_u32(uint32_t val) const { pimpl->write_u32(val); }
 
 // gptoss_mmap
 
+#ifdef _POSIX_MAPPED_FILES
+static void advise_weights(void* addr, size_t length) {
+    // Best-effort readahead + sequential hints help prefill a lot.
+    // These don't change results and are ignored if unsupported.
+    madvise(addr, length, MADV_WILLNEED);
+    madvise(addr, length, MADV_SEQUENTIAL);
+    // On some kernels this may be ignored for file-backed maps, but it's harmless:
+    madvise(addr, length, MADV_HUGEPAGE);
+}
+#endif
+
 struct gptoss_mmap::impl {
 #ifdef _POSIX_MAPPED_FILES
     std::vector<std::pair<size_t, size_t>> mapped_fragments;
@@ -289,6 +309,8 @@ struct gptoss_mmap::impl {
         if (addr == MAP_FAILED) {
             throw std::runtime_error(format("mmap failed: %s", strerror(errno)));
         }
+
+        advise_weights(addr, file->size());
 
         if (prefetch > 0) {
             if (posix_madvise(addr, std::min(file->size(), prefetch), POSIX_MADV_WILLNEED)) {

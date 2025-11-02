@@ -83,11 +83,16 @@ Reproducible TPS baseline + log
 ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
 # Logs are saved under tools/bench/logs/
 
+Decode runs on physical cores; prefill uses the requested threads. We pin OMP with OMP_PLACES=threads OMP_PROC_BIND=TRUE under a physical-core taskset mask. NUMA policy is --membind=0 with CLI --numa none for consistency.
+
+Optional warmup to stabilize disk cache:
+./build/bin/gptoss-cli -m models/gpt-oss-20b-Q4_K_M.gguf -p "warmup" -n 64 -t 8 --numa none >/dev/null
+
 ### Phase 1: Threading & Affinity Hygiene
 
-- **Single pool only**: OpenMP threads follow `--threads`; dynamic OMP teams disabled.
+- **Single pool only**: OpenMP threads follow `--threads`; nested levels are disabled while adaptive teams stay enabled.
 - **BLAS safety**: If compiled later, MKL/OpenBLAS/BLIS are hard-forced to **1 thread**.
-- **Affinity**: Bench scripts bind NUMA node 0 and pin cores `0..(THREADS-1)`.
+- **Affinity**: Bench scripts bind NUMA node 0 and then taskset the physical-core mask reported by `tools/bench/cpu_pinning.sh`.
 
 **Canonical baselines**
 ```bash
