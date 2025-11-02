@@ -27,8 +27,8 @@
 #define GPTOSS_HAS_MMAN 0
 #endif
 
-ggml_cgraph * build_decode_graph(gptoss_context * ctx) {
-    if (ctx == nullptr) {
+ggml_cgraph * build_decode_graph(gptoss_context * ctx, ggml_cgraph * current) {
+    if (!ctx || !current) {
         return nullptr;
     }
 
@@ -36,25 +36,8 @@ ggml_cgraph * build_decode_graph(gptoss_context * ctx) {
         return nullptr;
     }
 
-    if (ctx->backend_cpu == nullptr) {
-        return nullptr;
-    }
-
-    if (ctx->backends.size() != 1) {
-        return nullptr;
-    }
-
-    if (!ggml_backend_is_cpu(ctx->backend_cpu)) {
-        return nullptr;
-    }
-
-    auto * res = ctx->gf_res_prev.get();
-    if (res == nullptr) {
-        return nullptr;
-    }
-
-    ggml_cgraph * current = res->get_gf();
-    if (current == nullptr) {
+    // CPU-only fast path only
+    if (ctx->backends.size() != 1 || ctx->backend_cpu == nullptr || !ggml_backend_is_cpu(ctx->backend_cpu)) {
         return nullptr;
     }
 
@@ -67,7 +50,7 @@ ggml_cgraph * build_decode_graph(gptoss_context * ctx) {
 
         *ctx->decode_plan = ggml_graph_plan(ctx->decode_graph, ctx->n_threads(), ctx->threadpool);
 
-        const size_t extra = 8ull << 20; // 8 MiB safety margin
+        const size_t extra = 64ull << 20; // 64 MiB safety margin to avoid re-allocations
         size_t required = ctx->decode_plan->work_size;
         size_t desired  = required + extra;
         if (desired < required) {
@@ -99,9 +82,10 @@ ggml_cgraph * build_decode_graph(gptoss_context * ctx) {
             }
         }
 
-        if (ctx->decode_plan) {
-            ctx->decode_plan->work_data = ctx->scratch_ptr ? static_cast<uint8_t *>(ctx->scratch_ptr) : nullptr;
-        }
+    }
+
+    if (ctx->decode_plan) {
+        ctx->decode_plan->work_data = ctx->scratch_ptr ? static_cast<uint8_t *>(ctx->scratch_ptr) : nullptr;
     }
 
     return ctx->decode_graph;
@@ -126,7 +110,8 @@ bool llm_graph_input_embd::can_reuse(const llm_graph_params & params) {
     bool res = true;
 
     res &= (!tokens && !params.ubatch.token) || (tokens && tokens->ne[0] == params.ubatch.n_tokens);
-    res &= (!embd   && !params.ubatch.embd)  || (embd   &&   embd->ne[0] == params.ubatch.n_tokens);
+    // embd has shape [n_embd, n_tokens] -> check the token dimension (ne[1])
+    res &= (!embd   && !params.ubatch.embd)  || (embd   &&   embd->ne[1] == params.ubatch.n_tokens);
 
     return res;
 }

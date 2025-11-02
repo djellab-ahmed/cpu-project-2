@@ -758,6 +758,8 @@ llm_graph_result * gptoss_context::process_ubatch(const gptoss_ubatch & ubatch, 
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
     const auto gparams = graph_params(res, ubatch, mctx, gtype);
 
+    bool sched_alloc_needed = false;
+
     if (!graph_reuse_disable && res->can_reuse(gparams)) {
         //GPTOSS_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
@@ -767,6 +769,8 @@ llm_graph_result * gptoss_context::process_ubatch(const gptoss_ubatch & ubatch, 
 
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
+
+        sched_alloc_needed = true;
 
         //const auto t_start_us = ggml_time_us();
 
@@ -779,16 +783,23 @@ llm_graph_result * gptoss_context::process_ubatch(const gptoss_ubatch & ubatch, 
             ret = GGML_STATUS_FAILED;
             return nullptr;
         }
+    }
 
+    const bool cpu_only = backends.size() == 1 && backend_cpu != nullptr && ggml_backend_is_cpu(backend_cpu);
+    const bool is_decode = (gtype == LLM_GRAPH_TYPE_DECODER);
+
+    bool plan_ready = false;
+    if (!graph_reuse_disable && cpu_only && is_decode) {
+        build_decode_graph(this, gf);
+        plan_ready = decode_plan && decode_plan->work_data && scratch_ptr && decode_plan->work_size <= scratch_sz;
+    }
+
+    if (!plan_ready && sched_alloc_needed) {
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
             GPTOSS_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
-    }
-
-    if (!graph_reuse_disable && gtype == LLM_GRAPH_TYPE_DECODER) {
-        build_decode_graph(this);
     }
 
     // set the input data for the input tensors
@@ -1476,9 +1487,11 @@ ggml_status gptoss_context::graph_compute(
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
     }
 
-    const bool cpu_only = backends.size() == 1 && backend_cpu != nullptr && ggml_backend_is_cpu(backend_cpu);
-    const bool can_use_plan = !graph_reuse_disable && cpu_only && decode_plan != nullptr && gf == decode_graph &&
-        decode_plan->work_data != nullptr && scratch_ptr != nullptr && decode_plan->work_size <= scratch_sz;
+    const bool can_use_plan =
+        !graph_reuse_disable &&
+        decode_plan && decode_plan->work_data &&
+        gf == decode_graph &&
+        scratch_ptr && decode_plan->work_size <= scratch_sz;
 
     if (can_use_plan) {
         decode_plan->n_threads            = n_threads;

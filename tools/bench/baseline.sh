@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export GPTOSS_GRAPH_REUSE_DISABLE=${GPTOSS_GRAPH_REUSE_DISABLE:-0}
+
 MODEL="${1:?Usage: $0 /path/to/model.gguf [threads] [ubatch] [ctx] }"
 THREADS="${2:-$(nproc)}"
 UBATCH="${3:-1024}"

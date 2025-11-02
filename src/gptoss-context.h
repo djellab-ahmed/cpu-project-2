@@ -315,5 +315,5 @@ private:
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
 
-    friend ggml_cgraph * build_decode_graph(gptoss_context * ctx);
+    friend ggml_cgraph * build_decode_graph(gptoss_context * ctx, ggml_cgraph * current);
 };
