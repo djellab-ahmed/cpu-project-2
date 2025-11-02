@@ -692,10 +692,11 @@ int main(int argc, char ** argv) {
 
 #ifdef _OPENMP
     if (opts.threads > 0) {
-        // Keep OpenMP adaptive teams enabled (implementation default) but
-        // steer the target size to match the CLI's --threads flag so ggml and
-        // libgomp stay aligned.
         omp_set_num_threads(opts.threads);
+        omp_set_max_active_levels(1);   // safety: no nested OMP
+        // Optional but recommended on irregular kernels:
+        // try to keep dynamic teams enabled (implementation default is OK)
+        // If you previously forced omp_set_dynamic(0), remove that line.
     }
 #endif
 
