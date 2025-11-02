@@ -692,7 +692,9 @@ int main(int argc, char ** argv) {
 
 #ifdef _OPENMP
     if (opts.threads > 0) {
-        omp_set_dynamic(0);
+        // Keep OpenMP adaptive teams enabled (implementation default) but
+        // steer the target size to match the CLI's --threads flag so ggml and
+        // libgomp stay aligned.
         omp_set_num_threads(opts.threads);
     }
 #endif

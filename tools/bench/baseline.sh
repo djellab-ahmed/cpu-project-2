@@ -18,6 +18,9 @@ set -x
 cmd=$(cat <<EOF
 env \\
   OMP_NUM_THREADS=$THREADS \\
+  OMP_PROC_BIND=close \\
+  OMP_PLACES=cores \\
+  GOMP_CPU_AFFINITY=0-$((THREADS-1)) \\
   OPENBLAS_NUM_THREADS=1 \\
   MKL_NUM_THREADS=1 \\
   BLIS_NUM_THREADS=1 \\
@@ -28,7 +31,7 @@ env \\
     -tb $THREADS \\
     --ubatch-size $UBATCH \\
     --mlock \\
-    --numa distribute \\
+    --numa none \\
     --ctx-size $CTX \\
     --seed $SEED
 EOF
