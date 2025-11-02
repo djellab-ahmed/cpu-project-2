@@ -8,6 +8,7 @@ CTX="${4:-8192}"
 SEED="${SEED:-42}"
 BIN="${BIN:-./build/bin/gptoss-cli}"
 MODE="${MODE:-ht}"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 if ! [[ $THREADS =~ ^[0-9]+$ ]]; then
   echo "[bench] error: THREADS must be an integer (got '$THREADS')" >&2
@@ -30,24 +31,18 @@ if ! [[ $SEED =~ ^-?[0-9]+$ ]]; then
 fi
 
 if [[ "$MODE" == "phys" ]]; then
-  PHYS_MASK=$(bash -c '
-    if command -v lscpu >/dev/null 2>&1; then
-      lscpu -p=CPU,CORE,SOCKET,ONLINE \
-      | awk -F, "!/^#/ && $4==\"Y\" && $3==0 { if (!seen[$2]++) print $1 }" \
-      | sort -n | paste -sd, -
+  if PHYS_MASK=$($SCRIPT_DIR/cpu_pinning.sh); then
+    if [[ -z "$PHYS_MASK" ]]; then
+      echo "[bench] failed to determine physical core mask; falling back to HT" >&2
+      MODE=ht
     else
-      for f in /sys/devices/system/cpu/cpu*/topology/thread_siblings_list; do
-        s=$(<"$f"); echo "$s" | sed "s/,.*//;s/-.*//";
-      done | sort -n | uniq | paste -sd, -
+      DECODE_THREADS=$(awk -F, '{print NF}' <<<"$PHYS_MASK")
+      TASKSET_MASK="$PHYS_MASK"
+      echo "[bench] using physical primaries: $PHYS_MASK (decode_threads=$DECODE_THREADS)"
     fi
-  ')
-  if [[ -z "$PHYS_MASK" ]]; then
-    echo "[bench] failed to determine physical core mask; falling back to HT" >&2
-    MODE=ht
   else
-    DECODE_THREADS=$(awk -F, '{print NF}' <<<"$PHYS_MASK")
-    TASKSET_MASK="$PHYS_MASK"
-    echo "[bench] using physical primaries: $PHYS_MASK (decode_threads=$DECODE_THREADS)"
+    echo "[bench] cpu_pinning.sh failed; falling back to HT" >&2
+    MODE=ht
   fi
 fi
 
@@ -57,7 +52,7 @@ if [[ "$MODE" != "phys" ]]; then
   echo "[bench] using HT: mask=$TASKSET_MASK (threads=$DECODE_THREADS)"
 fi
 
-if [[ -z "$DECODE_THREADS" || $DECODE_THREADS -le 0 ]]; then
+if [[ -z "${DECODE_THREADS:-}" || $DECODE_THREADS -le 0 ]]; then
   echo "[bench] error: unable to determine decode thread count" >&2
   exit 1
 fi
