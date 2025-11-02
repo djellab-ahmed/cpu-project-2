@@ -15,8 +15,22 @@ log="$logdir/tps-$ts.log"
 
 echo "[bench] MODEL=$MODEL THREADS=$THREADS UBATCH=$UBATCH CTX=$CTX SEED=$SEED" | tee "$log"
 set -x
-numactl --cpunodebind=0 --membind=0 taskset -c 0-$((THREADS-1)) \
-"$BIN" -m "$MODEL" --measure-tps \
-  -t "$THREADS" -tb "$THREADS" \
-  --ubatch-size "$UBATCH" --mlock --numa distribute --ctx-size "$CTX" --seed "$SEED" \
-| tee -a "$log"
+cmd=$(cat <<EOF
+env \\
+  OMP_NUM_THREADS=$THREADS \\
+  OPENBLAS_NUM_THREADS=1 \\
+  MKL_NUM_THREADS=1 \\
+  BLIS_NUM_THREADS=1 \\
+  "$BIN" \\
+    -m "$MODEL" \\
+    --measure-tps \\
+    -t $THREADS \\
+    -tb $THREADS \\
+    --ubatch-size $UBATCH \\
+    --mlock \\
+    --numa distribute \\
+    --ctx-size $CTX \\
+    --seed $SEED
+EOF
+)
+numactl --cpunodebind=0 --membind=0 taskset -c 0-$((THREADS-1)) bash -lc "$cmd" | tee -a "$log"

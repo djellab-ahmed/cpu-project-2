@@ -83,6 +83,20 @@ Reproducible TPS baseline + log
 ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
 # Logs are saved under tools/bench/logs/
 
+### Phase 1: Threading & Affinity Hygiene
+
+- **Single pool only**: OpenMP threads follow `--threads`; dynamic OMP teams disabled.
+- **BLAS safety**: If compiled later, MKL/OpenBLAS/BLIS are hard-forced to **1 thread**.
+- **Affinity**: Bench scripts bind NUMA node 0 and pin cores `0..(THREADS-1)`.
+
+**Canonical baselines**
+```bash
+tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
+tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 12 1024 8192
+```
+
+Pick the higher TPS as your decode default. If 12 > 16, you’re memory-bound—prefer 12–14 threads.
+
 Note on --mlock
 
 If you see an mlock warning, either drop --mlock or raise limits:
