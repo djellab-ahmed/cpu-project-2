@@ -79,9 +79,18 @@ Download model (HF CLI)
 Run a quick bench
 ./tools/bench/run.sh 16
 
-Reproducible TPS baseline + log
-./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
+Warm up the model once before timing (recommended)
+./build/bin/gptoss-cli -m models/gpt-oss-20b-Q4_K_M.gguf -p warmup -n 64 -t 16 -tb 16 --ubatch-size 1024 --numa none >/dev/null 2>&1
+
+Reproducible TPS baseline + log (SMT / hyper-threaded pinning)
+MODE=ht ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
 # Logs are saved under tools/bench/logs/
+
+Prefer physical-core pinning instead of SMT
+MODE=phys ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
+
+Optional: enable memory locking (requires ulimit -l)
+ENABLE_MLOCK=1 MODE=ht ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
 
 Note on --mlock
 
