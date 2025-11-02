@@ -14,6 +14,13 @@ endif()
 
 message("CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 
+# if building in release, enable aggressive optimization and math fast-paths
+if (CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_compile_options(-O3 -DNDEBUG -march=native)
+    add_compile_options($<$<COMPILE_LANGUAGE:C>:-fno-math-errno -fno-trapping-math>
+                        $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno -fno-trapping-math>)
+endif()
+
 # Add path to modules
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/")
 

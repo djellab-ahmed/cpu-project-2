@@ -25,6 +25,22 @@
 #include <utility>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+extern "C" {
+#if defined(GGML_BLAS_USE_MKL)
+    void mkl_set_num_threads_local(int);
+#endif
+#if defined(OPENBLAS_VERSION)
+    void openblas_set_num_threads(int);
+#endif
+#if defined(GGML_BLAS_USE_BLIS)
+    void bli_thread_set_num_threads(int);
+#endif
+}
+
 namespace {
 
 struct options {
@@ -673,6 +689,21 @@ int main(int argc, char ** argv) {
     if (!parse_arguments(argc, argv, opts)) {
         return 1;
     }
+
+#ifdef _OPENMP
+    if (opts.threads > 0) {
+        omp_set_num_threads(opts.threads);
+    }
+#endif
+#if defined(GGML_BLAS_USE_MKL)
+    mkl_set_num_threads_local(1);
+#endif
+#if defined(OPENBLAS_VERSION)
+    openblas_set_num_threads(1);
+#endif
+#if defined(GGML_BLAS_USE_BLIS)
+    bli_thread_set_num_threads(1);
+#endif
 
     gptoss_log_set(filtered_log_callback, nullptr);
     gptoss_backend_init();
