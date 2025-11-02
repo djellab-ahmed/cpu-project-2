@@ -1,0 +1,40 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "release-native",
+      "displayName": "Release (native CPU)",
+      "generator": "Ninja",
+      "binaryDir": "build/release-native",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
+        "GGML_OPENMP": "ON",
+        "GGML_BLAS": "OFF",
+        "GGML_AVX2": "ON",
+        "GGML_AVX512": "ON",
+        "GGML_AMX": "ON"
+      }
+    },
+    {
+      "name": "release-portable",
+      "displayName": "Release (portable)",
+      "generator": "Ninja",
+      "binaryDir": "build/release-portable",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
+        "GGML_OPENMP": "ON",
+        "GGML_BLAS": "OFF",
+        "GGML_AVX2": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "build-release-native", "configurePreset": "release-native" },
+    { "name": "build-release-portable", "configurePreset": "release-portable" }
+  ]
+}
