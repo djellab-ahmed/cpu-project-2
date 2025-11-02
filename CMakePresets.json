@@ -1,12 +1,12 @@
 {
   "version": 5,
-  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "cmakeMinimumRequired": { "major": 3, "minor": 19, "patch": 0 },
   "configurePresets": [
     {
       "name": "release-native",
-      "displayName": "Release (native CPU)",
-      "generator": "Ninja",
-      "binaryDir": "build/release-native",
+      "displayName": "Release (native, OpenMP on, BLAS off)",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-release-native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
@@ -21,20 +21,22 @@
     {
       "name": "release-portable",
       "displayName": "Release (portable)",
-      "generator": "Ninja",
-      "binaryDir": "build/release-portable",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-release-portable",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
         "GGML_OPENMP": "ON",
         "GGML_BLAS": "OFF",
-        "GGML_AVX2": "ON"
+        "GGML_AVX2": "ON",
+        "GGML_AVX512": "ON",
+        "GGML_AMX": "OFF"
       }
     }
   ],
   "buildPresets": [
-    { "name": "build-release-native", "configurePreset": "release-native" },
-    { "name": "build-release-portable", "configurePreset": "release-portable" }
+    { "name": "build-release-native", "configurePreset": "release-native", "jobs": 0 },
+    { "name": "build-release-portable", "configurePreset": "release-portable", "jobs": 0 }
   ]
 }
