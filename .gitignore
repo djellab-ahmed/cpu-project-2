@@ -1,0 +1,40 @@
+# CMake/build
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Local binaries, libs (we only ship sources)
+bin/
+/*.so
+/*.dylib
+/*.dll
+
+# Bench logs
+tools/bench/logs/
+tools/bench/*.log
+
+# Hugging Face caches
+.cache/
+models/.cache/
+
+# Models live locally, never in git
+models/*
+!models/.gitkeep
+!models/README.md
+
+# Python env/cache
+.venv/
+venv/
+__pycache__/
+
+# perf outputs
+perf.data*
+*.map
+
+# OS/editor
+.DS_Store
+*~
+*.swp
