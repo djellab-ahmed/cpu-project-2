@@ -692,11 +692,8 @@ int main(int argc, char ** argv) {
 
 #ifdef _OPENMP
     if (opts.threads > 0) {
+        // Keep teams aligned to --threads; leave dynamism to OMP_DYNAMIC env
         omp_set_num_threads(opts.threads);
-        omp_set_max_active_levels(1);   // safety: no nested OMP
-        // Optional but recommended on irregular kernels:
-        // try to keep dynamic teams enabled (implementation default is OK)
-        // If you previously forced omp_set_dynamic(0), remove that line.
     }
 #endif
 
