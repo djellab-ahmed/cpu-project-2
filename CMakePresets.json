@@ -1,42 +1,27 @@
 {
-  "version": 5,
-  "cmakeMinimumRequired": { "major": 3, "minor": 19, "patch": 0 },
+  "version": 4,
   "configurePresets": [
     {
-      "name": "release-native",
-      "displayName": "Release (native, OpenMP on, BLAS off)",
+      "name": "dev",
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-release-native",
+      "binaryDir": "build",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
-        "GGML_OPENMP": "ON",
-        "GGML_BLAS": "OFF",
-        "GGML_AVX2": "ON",
-        "GGML_AVX512": "ON",
-        "GGML_AMX": "ON"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "GPTOSS_BUILD_TOOLS": "ON"
       }
     },
     {
-      "name": "release-portable",
-      "displayName": "Release (portable)",
-      "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build-release-portable",
+      "name": "release-native",
+      "inherits": "dev",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-math-errno -fomit-frame-pointer -flto",
-        "GGML_OPENMP": "ON",
-        "GGML_BLAS": "OFF",
-        "GGML_AVX2": "ON",
-        "GGML_AVX512": "ON",
-        "GGML_AMX": "OFF"
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-finite-math-only -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -ffast-math -fno-finite-math-only -fno-math-errno -fomit-frame-pointer -flto -march=native -mtune=native"
       }
     }
   ],
   "buildPresets": [
-    { "name": "build-release-native", "configurePreset": "release-native", "jobs": 0 },
-    { "name": "build-release-portable", "configurePreset": "release-portable", "jobs": 0 }
+    { "name": "build", "configurePreset": "dev" },
+    { "name": "build-release-native", "configurePreset": "release-native", "targets": [ "gptoss-cli" ] }
   ]
 }
