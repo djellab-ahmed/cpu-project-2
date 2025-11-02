@@ -1,5 +1,6 @@
 #include "gptoss-graph.h"
 
+#include "gptoss-context.h"
 #include "gptoss-impl.h"
 #include "gptoss-batch.h"
 #include "gptoss-cparams.h"
@@ -8,10 +9,103 @@
 #include "gptoss-kv-cache-iswa.h"
 #include "gptoss-memory-hybrid.h"
 #include "gptoss-memory-recurrent.h"
+#include "ggml-cpu.h"
 
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+
+#ifdef __has_include
+#if __has_include(<sys/mman.h>)
+#include <sys/mman.h>
+#define GPTOSS_HAS_MMAN 1
+#endif
+#endif
+
+#ifndef GPTOSS_HAS_MMAN
+#define GPTOSS_HAS_MMAN 0
+#endif
+
+ggml_cgraph * build_decode_graph(gptoss_context * ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
+
+    if (ctx->graph_reuse_disable) {
+        return nullptr;
+    }
+
+    if (ctx->backend_cpu == nullptr) {
+        return nullptr;
+    }
+
+    if (ctx->backends.size() != 1) {
+        return nullptr;
+    }
+
+    if (!ggml_backend_is_cpu(ctx->backend_cpu)) {
+        return nullptr;
+    }
+
+    auto * res = ctx->gf_res_prev.get();
+    if (res == nullptr) {
+        return nullptr;
+    }
+
+    ggml_cgraph * current = res->get_gf();
+    if (current == nullptr) {
+        return nullptr;
+    }
+
+    if (ctx->decode_graph != current) {
+        ctx->decode_graph = current;
+
+        if (ctx->decode_plan == nullptr) {
+            ctx->decode_plan = new ggml_cplan();
+        }
+
+        *ctx->decode_plan = ggml_graph_plan(ctx->decode_graph, ctx->n_threads(), ctx->threadpool);
+
+        const size_t extra = 8ull << 20; // 8 MiB safety margin
+        size_t required = ctx->decode_plan->work_size;
+        size_t desired  = required + extra;
+        if (desired < required) {
+            desired = required;
+        }
+        if (desired == 0) {
+            desired = extra;
+        }
+
+        if (desired > ctx->scratch_sz) {
+            if (ctx->scratch_ptr) {
+#if GPTOSS_HAS_MMAN && defined(MADV_DONTNEED)
+                madvise(ctx->scratch_ptr, ctx->scratch_sz, MADV_DONTNEED);
+#endif
+                free(ctx->scratch_ptr);
+                ctx->scratch_ptr = nullptr;
+                ctx->scratch_sz  = 0;
+            }
+
+            void * scratch = nullptr;
+            if (posix_memalign(&scratch, 64, desired) == 0) {
+#if GPTOSS_HAS_MMAN && defined(MADV_HUGEPAGE)
+                madvise(scratch, desired, MADV_HUGEPAGE);
+#endif
+                ctx->scratch_ptr = scratch;
+                ctx->scratch_sz  = desired;
+            } else {
+                GPTOSS_LOG_WARN("%s: failed to allocate decode scratch buffer of %zu bytes\n", __func__, desired);
+            }
+        }
+
+        if (ctx->decode_plan) {
+            ctx->decode_plan->work_data = ctx->scratch_ptr ? static_cast<uint8_t *>(ctx->scratch_ptr) : nullptr;
+        }
+    }
+
+    return ctx->decode_graph;
+}
 
 void llm_graph_input_embd::set_input(const gptoss_ubatch * ubatch) {
     if (ubatch->token) {

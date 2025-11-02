@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <cstdlib>
 
 //
 // gptoss_context
@@ -270,6 +271,9 @@ gptoss_context::gptoss_context(
         }
     }
 
+    output_ids.reserve(cparams.n_batch);
+    output_swaps.reserve(cparams.n_batch);
+
     if (!hparams.vocab_only) {
         gptoss_memory_context_ptr mctx;
         if (memory) {
@@ -399,6 +403,17 @@ gptoss_context::gptoss_context(
 }
 
 gptoss_context::~gptoss_context() {
+    if (decode_plan) {
+        delete decode_plan;
+        decode_plan = nullptr;
+    }
+
+    if (scratch_ptr) {
+        free(scratch_ptr);
+        scratch_ptr = nullptr;
+        scratch_sz  = 0;
+    }
+
     ggml_opt_free(opt_ctx);
 }
 
@@ -770,6 +785,10 @@ llm_graph_result * gptoss_context::process_ubatch(const gptoss_ubatch & ubatch, 
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+    }
+
+    if (!graph_reuse_disable && gtype == LLM_GRAPH_TYPE_DECODER) {
+        build_decode_graph(this);
     }
 
     // set the input data for the input tensors
@@ -1455,6 +1474,24 @@ ggml_status gptoss_context::graph_compute(
     // set the number of threads for all the backends
     for (const auto & set_n_threads_fn : set_n_threads_fns) {
         set_n_threads_fn.second(set_n_threads_fn.first, n_threads);
+    }
+
+    const bool cpu_only = backends.size() == 1 && backend_cpu != nullptr && ggml_backend_is_cpu(backend_cpu);
+    const bool can_use_plan = !graph_reuse_disable && cpu_only && decode_plan != nullptr && gf == decode_graph &&
+        decode_plan->work_data != nullptr && scratch_ptr != nullptr && decode_plan->work_size <= scratch_sz;
+
+    if (can_use_plan) {
+        decode_plan->n_threads            = n_threads;
+        decode_plan->threadpool           = tp;
+        decode_plan->abort_callback       = abort_callback;
+        decode_plan->abort_callback_data  = abort_callback_data;
+
+        auto status_plan = ggml_graph_compute(gf, decode_plan);
+        if (status_plan != GGML_STATUS_SUCCESS) {
+            GPTOSS_LOG_ERROR("%s: ggml_graph_compute failed with error %d\n", __func__, status_plan);
+        }
+
+        return status_plan;
     }
 
     auto status = ggml_backend_sched_graph_compute_async(sched.get(), gf);
