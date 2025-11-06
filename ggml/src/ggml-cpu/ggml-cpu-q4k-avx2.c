@@ -3,6 +3,7 @@
 #include "ggml-impl.h"
 #include "ggml-quants.h"
 #include "ggml.h"
+#include "ops.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -22,9 +23,11 @@ static GGML_TLS float * tls_decode_x = NULL;
 static GGML_TLS size_t  tls_decode_x_cap = 0;
 
 static inline int qgemv_dbg(void) {
-    const char * env = getenv("GPTOSS_QGEMV_DEBUG");
-    return env != NULL && env[0] != '\0' && env[0] != '0';
+    const char * e = getenv("GPTOSS_QGEMV_DEBUG");
+    return e != NULL && e[0] != '\0' && e[0] != '0';
 }
+
+static int q4k_logged;
 
 static inline void * ggml_qgemv_tls_realloc(void ** ptr, size_t * cap, size_t need, size_t elem_sz) {
     if (need == 0) {
@@ -130,18 +133,13 @@ static inline void ggml_qgemv_accumulate_high32(
 void ggml_mul_mat_q4k_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        struct ggml_tensor * w,
-        struct ggml_tensor * x) {
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x) {
 
     const struct ggml_tensor * const w_tensor = w;
     const struct ggml_tensor * const x_tensor = x;
 
-#ifdef GGML_TYPE_Q4_K_M
-    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K || w_tensor->type == GGML_TYPE_Q4_K_M;
-#else
-    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K;
-#endif
-    GGML_ASSERT(w_is_q4k);
+    GGML_ASSERT(ggml_cpu_is_q4k_family(w_tensor->type));
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
     GGML_ASSERT(x_tensor->ne[1] == 1);
     GGML_ASSERT(
@@ -150,11 +148,9 @@ void ggml_mul_mat_q4k_decode_avx2(
         x_tensor->type == GGML_TYPE_BF16 ||
         x_tensor->type == GGML_TYPE_Q8_K);
 
-    if (params->ith == 0 && qgemv_dbg()) {
-        static int once;
-        if (!once++) {
-            fprintf(stderr, "[qgemv] AVX2 Q4_K decode fastpath enabled (n=1)\n");
-        }
+    if (!q4k_logged && qgemv_dbg() && params->ith == 0) {
+        q4k_logged = 1;
+        fprintf(stderr, "[qgemv] Q4_K AVX2 decode kernel active (n=1)\n");
     }
 
     const int ith = params->ith;
@@ -304,8 +300,8 @@ void ggml_mul_mat_q4k_decode_avx2(
 void ggml_mul_mat_q4k_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        struct ggml_tensor * w,
-        struct ggml_tensor * x) {
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x) {
     (void) params;
     (void) dst;
     (void) w;

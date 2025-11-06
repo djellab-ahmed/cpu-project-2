@@ -3,6 +3,7 @@
 #include "ggml-impl.h"
 #include "ggml-quants.h"
 #include "ggml.h"
+#include "ops.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -19,8 +20,8 @@
 #endif
 
 static inline int qgemv_dbg(void) {
-    const char * env = getenv("GPTOSS_QGEMV_DEBUG");
-    return env != NULL && env[0] != '\0' && env[0] != '0';
+    const char * e = getenv("GPTOSS_QGEMV_DEBUG");
+    return e != NULL && e[0] != '\0' && e[0] != '0';
 }
 
 static inline void * ggml_qgemv_tls_realloc(void ** ptr, size_t * cap, size_t need, size_t elem_sz) {
@@ -63,6 +64,8 @@ static inline const char * ggml_qgemv_row_ptr_from_index(
 
 #if defined(__AVX2__) && defined(GGML_TYPE_MXFP4)
 
+static int mxfp4_logged;
+
 static GGML_TLS float * tls_decode_x = NULL;
 static GGML_TLS size_t  tls_decode_x_cap = 0;
 
@@ -99,8 +102,8 @@ static inline void ggml_mxfp4_accumulate16(const __m128i values,
 void ggml_mul_mat_mxfp4_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        struct ggml_tensor * w,
-        struct ggml_tensor * x) {
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x) {
 
     const struct ggml_tensor * const w_tensor = w;
     const struct ggml_tensor * const x_tensor = x;
@@ -113,11 +116,9 @@ void ggml_mul_mat_mxfp4_decode_avx2(
         x_tensor->type == GGML_TYPE_F16 ||
         x_tensor->type == GGML_TYPE_BF16);
 
-    if (params->ith == 0 && qgemv_dbg()) {
-        static int once;
-        if (!once++) {
-            fprintf(stderr, "[qgemv] AVX2 MXFP4 decode fastpath enabled (n=1)\n");
-        }
+    if (!mxfp4_logged && qgemv_dbg() && params->ith == 0) {
+        mxfp4_logged = 1;
+        fprintf(stderr, "[qgemv] MXFP4 AVX2 decode kernel active (n=1)\n");
     }
 
     const int ith = params->ith;
@@ -261,8 +262,8 @@ void ggml_mul_mat_mxfp4_decode_avx2(
 void ggml_mul_mat_mxfp4_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        struct ggml_tensor * w,
-        struct ggml_tensor * x) {
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x) {
     (void) params;
     (void) dst;
     (void) w;
