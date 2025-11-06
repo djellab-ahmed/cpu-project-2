@@ -5087,7 +5087,7 @@ struct ggml_tensor * ggml_flash_attn_decode(
     }
 
     struct ggml_tensor * out = ggml_new_tensor(ctx, GGML_TYPE_F32, n_dims, ne);
-    GGML_ASSERT(q->ne[1] == 1 && "flash_attn_decode: n_batch must be 1");
+    GGML_ASSERT(q->ne[2] == 1 && "flash_attn_decode: n_batch must be 1");
 
     out->op     = GGML_OP_FLASH_ATTN_DECODE;
     out->src[0] = q;

@@ -1390,7 +1390,9 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         }
 
         const bool decode_single_token = ubatch.n_seq_tokens == 1 && ubatch.n_seqs == 1 && q->ne[2] == 1;
-        const bool use_flash_decode = flash_decode_runtime_enabled() && decode_single_token && sinks == nullptr;
+        const bool causal_only = cparams.causal_attn;
+        const bool has_mask = kq_mask != nullptr;
+        const bool use_flash_decode = flash_decode_runtime_enabled() && decode_single_token && causal_only && !has_mask && sinks == nullptr;
 
         if (use_flash_decode) {
             cur = ggml_flash_attn_decode(ctx0, q, k_use, v_use, kq_scale);

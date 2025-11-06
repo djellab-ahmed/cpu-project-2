@@ -16,6 +16,19 @@
 #include "ops.h"
 #include "ggml.h"
 
+void ggml_mul_mat_q4k_decode_avx2(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x);
+#ifdef GGML_TYPE_MXFP4
+void ggml_mul_mat_mxfp4_decode_avx2(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x);
+#endif
+
 #ifndef GGML_RESTRICT
 #if defined(__clang__) || defined(__GNUC__)
 #define GGML_RESTRICT __restrict__
@@ -23,56 +36,6 @@
 #define GGML_RESTRICT
 #endif
 #endif
-
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#define GGML_TLS _Thread_local
-#elif defined(_MSC_VER)
-#define GGML_TLS __declspec(thread)
-#else
-#define GGML_TLS __thread
-#endif
-
-static GGML_TLS block_q8_K * tls_x_q8 = NULL;
-static GGML_TLS size_t      tls_x_q8_cap = 0;
-static GGML_TLS float     * tls_x_f32 = NULL;
-static GGML_TLS size_t      tls_x_f32_cap = 0;
-
-#ifndef GGML_ALIGNED_FREE_TAKES_SIZE
-#define GGML_ALIGNED_FREE_TAKES_SIZE 1
-#endif
-
-#if GGML_ALIGNED_FREE_TAKES_SIZE
-#define GGML_FREE_ALIGNED(ptr, size) ggml_aligned_free((ptr), (size))
-#else
-#define GGML_FREE_ALIGNED(ptr, size) ggml_aligned_free((ptr))
-#endif
-
-#if defined(GGML_TYPE_MXFP4)
-static GGML_TLS float     * tls_wtile = NULL;
-static GGML_TLS size_t      tls_wtile_cap = 0;
-
-#ifndef QK_MXFP4
-#define QK_MXFP4 32
-#endif
-#endif
-
-static inline void * ggml_tls_realloc_aligned(void ** ptr, size_t * cap, size_t need, size_t elem_sz) {
-    if (need == 0) {
-        return *ptr;
-    }
-
-    if (*cap < need) {
-        if (*ptr != NULL) {
-            GGML_FREE_ALIGNED(*ptr, (*cap) * elem_sz);
-        }
-        void * const new_ptr = ggml_aligned_malloc(need * elem_sz);
-        GGML_ASSERT(new_ptr != NULL);
-        *ptr = new_ptr;
-        *cap = need;
-    }
-
-    return *ptr;
-}
 
 static inline const char * ggml_row_ptr_from_index(
         const char * base,
@@ -461,347 +424,6 @@ const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type
     return &type_traits_cpu[type];
 }
 
-static void ggml_mul_mat_q4k_decode_avx2(
-        const struct ggml_compute_params * GGML_RESTRICT params,
-        const struct ggml_tensor * GGML_RESTRICT src0,
-        const struct ggml_tensor * GGML_RESTRICT src1,
-              struct ggml_tensor * GGML_RESTRICT dst) {
-
-#ifdef GGML_TYPE_Q4_K_M
-    const bool src0_is_q4k = src0->type == GGML_TYPE_Q4_K || src0->type == GGML_TYPE_Q4_K_M;
-#else
-    const bool src0_is_q4k = src0->type == GGML_TYPE_Q4_K;
-#endif
-    GGML_ASSERT(src0_is_q4k);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(src1->ne[1] == 1);
-    GGML_ASSERT(
-        src1->type == GGML_TYPE_F32 ||
-        src1->type == GGML_TYPE_F16 ||
-        src1->type == GGML_TYPE_BF16 ||
-        src1->type == GGML_TYPE_Q8_K);
-
-    const int ith = params->ith;
-    const int nth = params->nth;
-
-    const int64_t cols = src0->ne[0];
-    GGML_ASSERT(cols % QK_K == 0);
-
-    const int64_t rows_per_mat = src0->ne[1];
-    const int64_t tiles_i2 = src0->ne[2] > 0 ? src0->ne[2] : 1;
-    const int64_t tiles_i3 = src0->ne[3] > 0 ? src0->ne[3] : 1;
-
-    const int64_t total_rows = rows_per_mat * tiles_i2 * tiles_i3;
-    const int64_t r0 = total_rows * ith / nth;
-    const int64_t r1 = total_rows * (ith + 1) / nth;
-    if (r0 >= r1 || total_rows == 0) {
-        return;
-    }
-
-    GGML_ASSERT(src0->nb[0] == ggml_type_size(src0->type));
-    GGML_ASSERT(dst->nb[0] == sizeof(float));
-
-    const size_t nb01 = src0->nb[1];
-    const size_t nb02 = src0->nb[2];
-    const size_t nb03 = src0->nb[3];
-
-    const size_t nb10 = src1->nb[0];
-    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-    const size_t nb12 = src1->nb[2];
-    const size_t nb13 = src1->nb[3];
-
-    const size_t nb0 = dst->nb[0];
-    const size_t nb2 = dst->nb[2];
-    const size_t nb3 = dst->nb[3];
-
-    const int64_t rows_per_i2 = rows_per_mat;
-    const int64_t rows_per_i3 = rows_per_mat * tiles_i2;
-
-    const int64_t q8_blocks = cols / QK_K;
-    const bool src1_is_q8 = src1->type == GGML_TYPE_Q8_K;
-    const bool src1_is_f32 = src1->type == GGML_TYPE_F32;
-    const bool src1_is_f16 = src1->type == GGML_TYPE_F16;
-    const bool src1_is_bf16 = src1->type == GGML_TYPE_BF16;
-
-    block_q8_K * x_q8_tmp = NULL;
-    if (!src1_is_q8) {
-        x_q8_tmp = ggml_tls_realloc_aligned((void **) &tls_x_q8, &tls_x_q8_cap, (size_t) q8_blocks, sizeof(block_q8_K));
-    }
-
-    bool need_x_f32_tmp = src1_is_f16 || src1_is_bf16;
-#if !defined(GGML_VEC_DOT_Q4KQ8K_STRIDED)
-    need_x_f32_tmp = true;
-#endif
-    float * x_f32_tmp = NULL;
-    if (need_x_f32_tmp) {
-        x_f32_tmp = ggml_tls_realloc_aligned((void **) &tls_x_f32, &tls_x_f32_cap, (size_t) cols, sizeof(float));
-    }
-
-    const char * GGML_RESTRICT x_base = (const char *) src1->data;
-    const char * GGML_RESTRICT w_base = (const char *) src0->data;
-    char * GGML_RESTRICT dst_base = (char *) dst->data;
-
-    int64_t prev_i2 = -1;
-    int64_t prev_i3 = -1;
-    const block_q8_K * x_q8_cur = NULL;
-    const float * x_f32_cur = NULL;
-
-#if defined(GGML_VEC_DOT_Q4KQ8K_STRIDED)
-#define GGML_CALL_Q4K_Q8K(N,ACC,WROW,XQ8) ggml_vec_dot_q4_K_q8_K((int) (N), (ACC), 0, (WROW), 0, (XQ8), 0, 1)
-#else
-#define GGML_CALL_Q4K_Q8K(N,ACC,WROW,XQ8) ggml_vec_dot_q4_K_q8_K((int) (N), (ACC), (WROW), (XQ8))
-#endif
-
-    for (int64_t row_index = r0; row_index < r1; ++row_index) {
-        int64_t tmp = row_index;
-        const int64_t i3 = tiles_i3 > 0 ? tmp / rows_per_i3 : 0;
-        tmp -= i3 * rows_per_i3;
-        const int64_t i2 = tiles_i2 > 0 ? tmp / rows_per_i2 : 0;
-        const int64_t i1 = tmp - i2 * rows_per_i2;
-
-        if (i2 != prev_i2 || i3 != prev_i3) {
-            prev_i2 = i2;
-            prev_i3 = i3;
-
-            const char * x_ptr = x_base + i2 * nb12 + i3 * nb13;
-
-            if (src1_is_q8) {
-                x_q8_cur = (const block_q8_K *) x_ptr;
-            } else if (src1_is_f32) {
-                x_f32_cur = (const float *) x_ptr;
-                GGML_ASSERT(x_q8_tmp != NULL);
-                quantize_row_q8_K(x_f32_cur, x_q8_tmp, cols);
-                x_q8_cur = x_q8_tmp;
-            } else if (src1_is_f16) {
-                GGML_ASSERT(x_f32_tmp != NULL);
-                ggml_cpu_fp16_to_fp32((const ggml_fp16_t *) x_ptr, x_f32_tmp, cols);
-                x_f32_cur = x_f32_tmp;
-                GGML_ASSERT(x_q8_tmp != NULL);
-                quantize_row_q8_K(x_f32_cur, x_q8_tmp, cols);
-                x_q8_cur = x_q8_tmp;
-            } else if (src1_is_bf16) {
-                GGML_ASSERT(x_f32_tmp != NULL);
-                ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) x_ptr, x_f32_tmp, cols);
-                x_f32_cur = x_f32_tmp;
-                GGML_ASSERT(x_q8_tmp != NULL);
-                quantize_row_q8_K(x_f32_cur, x_q8_tmp, cols);
-                x_q8_cur = x_q8_tmp;
-            } else {
-                GGML_ABORT("Q4_K fast decode: unsupported activation type");
-            }
-
-#if defined(__AVX2__)
-            _mm_prefetch((const char *) x_q8_cur, _MM_HINT_T0);
-#endif
-        }
-
-        const char * w_row_ptr = w_base + i1 * nb01 + i2 * nb02 + i3 * nb03;
-        const block_q4_K * w_row = (const block_q4_K *) w_row_ptr;
-
-        float acc = 0.0f;
-#if defined(GGML_CALL_Q4K_Q8K)
-        GGML_CALL_Q4K_Q8K(cols, &acc, w_row, x_q8_cur);
-#else
-        GGML_ASSERT(x_f32_tmp != NULL);
-        const float * x_vec = x_f32_cur;
-        if (src1_is_q8) {
-            dequantize_row_q8_K(x_q8_cur, x_f32_tmp, cols);
-            x_vec = x_f32_tmp;
-        }
-        for (int64_t blk = 0; blk < q8_blocks; ++blk) {
-            float w_tmp[QK_K];
-            dequantize_row_q4_K(&w_row[blk], w_tmp, QK_K);
-            for (int64_t j = 0; j < QK_K; ++j) {
-                acc += w_tmp[j] * x_vec[blk * QK_K + j];
-            }
-        }
-#endif
-
-        float * dst_ptr = (float *)(dst_base + i1 * nb0 + i2 * nb2 + i3 * nb3);
-        *dst_ptr = acc;
-
-#if defined(__AVX2__)
-        if (row_index + 1 < r1) {
-            const char * next_row = ggml_row_ptr_from_index(
-                w_base,
-                row_index + 1,
-                rows_per_i2,
-                rows_per_i3,
-                tiles_i2,
-                tiles_i3,
-                nb01,
-                nb02,
-                nb03);
-            _mm_prefetch(next_row, _MM_HINT_T0);
-        }
-#endif
-    }
-
-#undef GGML_CALL_Q4K_Q8K
-}
-
-#if defined(GGML_TYPE_MXFP4)
-
-static void ggml_mul_mat_mxfp4_decode_avx2(
-        const struct ggml_compute_params * GGML_RESTRICT params,
-        const struct ggml_tensor * GGML_RESTRICT src0,
-        const struct ggml_tensor * GGML_RESTRICT src1,
-              struct ggml_tensor * GGML_RESTRICT dst) {
-
-    GGML_ASSERT(src0->type == GGML_TYPE_MXFP4);
-    GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(src1->ne[1] == 1);
-    GGML_ASSERT(
-        src1->type == GGML_TYPE_F32 ||
-        src1->type == GGML_TYPE_F16 ||
-        src1->type == GGML_TYPE_BF16);
-
-    const int ith = params->ith;
-    const int nth = params->nth;
-
-    const int64_t cols = src0->ne[0];
-    const int64_t rows_per_mat = src0->ne[1];
-    const int64_t tiles_i2 = src0->ne[2] > 0 ? src0->ne[2] : 1;
-    const int64_t tiles_i3 = src0->ne[3] > 0 ? src0->ne[3] : 1;
-
-    const int64_t total_rows = rows_per_mat * tiles_i2 * tiles_i3;
-    const int64_t r0 = total_rows * ith / nth;
-    const int64_t r1 = total_rows * (ith + 1) / nth;
-    if (r0 >= r1 || total_rows == 0) {
-        return;
-    }
-
-    GGML_ASSERT(cols % QK_MXFP4 == 0);
-    GGML_ASSERT(dst->nb[0] == sizeof(float));
-
-    const size_t nb01 = src0->nb[1];
-    const size_t nb02 = src0->nb[2];
-    const size_t nb03 = src0->nb[3];
-
-    const size_t nb10 = src1->nb[0];
-    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
-    const size_t nb12 = src1->nb[2];
-    const size_t nb13 = src1->nb[3];
-
-    const size_t nb0 = dst->nb[0];
-    const size_t nb2 = dst->nb[2];
-    const size_t nb3 = dst->nb[3];
-
-    const int64_t rows_per_i2 = rows_per_mat;
-    const int64_t rows_per_i3 = rows_per_mat * tiles_i2;
-
-    float * x_f32_tmp = NULL;
-    if (src1->type == GGML_TYPE_F16 || src1->type == GGML_TYPE_BF16) {
-        x_f32_tmp = ggml_tls_realloc_aligned((void **) &tls_x_f32, &tls_x_f32_cap, (size_t) cols, sizeof(float));
-    }
-
-    const int tile = QK_MXFP4 * 8;
-    float * w_tile = ggml_tls_realloc_aligned((void **) &tls_wtile, &tls_wtile_cap, (size_t) tile, sizeof(float));
-
-    const char * GGML_RESTRICT x_base = (const char *) src1->data;
-    const char * GGML_RESTRICT w_base = (const char *) src0->data;
-    char * GGML_RESTRICT dst_base = (char *) dst->data;
-
-    int64_t prev_i2 = -1;
-    int64_t prev_i3 = -1;
-    const float * x_f32_cur = NULL;
-
-    for (int64_t row_index = r0; row_index < r1; ++row_index) {
-        int64_t tmp = row_index;
-        const int64_t i3 = tiles_i3 > 0 ? tmp / rows_per_i3 : 0;
-        tmp -= i3 * rows_per_i3;
-        const int64_t i2 = tiles_i2 > 0 ? tmp / rows_per_i2 : 0;
-        const int64_t i1 = tmp - i2 * rows_per_i2;
-
-        if (i2 != prev_i2 || i3 != prev_i3) {
-            prev_i2 = i2;
-            prev_i3 = i3;
-
-            const char * x_ptr = x_base + i2 * nb12 + i3 * nb13;
-
-            if (src1->type == GGML_TYPE_F32) {
-                x_f32_cur = (const float *) x_ptr;
-            } else if (src1->type == GGML_TYPE_F16) {
-                GGML_ASSERT(x_f32_tmp != NULL);
-                ggml_cpu_fp16_to_fp32((const ggml_fp16_t *) x_ptr, x_f32_tmp, cols);
-                x_f32_cur = x_f32_tmp;
-            } else if (src1->type == GGML_TYPE_BF16) {
-                GGML_ASSERT(x_f32_tmp != NULL);
-                ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) x_ptr, x_f32_tmp, cols);
-                x_f32_cur = x_f32_tmp;
-            } else {
-                GGML_ABORT("MXFP4 fast decode: unsupported activation type");
-            }
-        }
-
-        const char * w_row_ptr = w_base + i1 * nb01 + i2 * nb02 + i3 * nb03;
-        const block_mxfp4 * w_row = (const block_mxfp4 *) w_row_ptr;
-
-        GGML_ASSERT(x_f32_cur != NULL);
-
-        float acc = 0.0f;
-        for (int64_t off = 0; off < cols; off += tile) {
-            const int blk = (int) ((off + tile <= cols) ? tile : (cols - off));
-            const block_mxfp4 * w_block = w_row + (off / QK_MXFP4);
-            dequantize_row_mxfp4(w_block, w_tile, blk);
-
-#if defined(__AVX2__)
-            __m256 vacc = _mm256_setzero_ps();
-            int i = 0;
-            for (; i + 8 <= blk; i += 8) {
-                const __m256 vw = _mm256_loadu_ps(w_tile + i);
-                const __m256 vx = _mm256_loadu_ps(x_f32_cur + off + i);
-                vacc = _mm256_fmadd_ps(vw, vx, vacc);
-            }
-            float tmp8[8];
-            _mm256_storeu_ps(tmp8, vacc);
-            acc += tmp8[0] + tmp8[1] + tmp8[2] + tmp8[3] + tmp8[4] + tmp8[5] + tmp8[6] + tmp8[7];
-            for (; i < blk; ++i) {
-                acc += w_tile[i] * x_f32_cur[off + i];
-            }
-#else
-            for (int i = 0; i < blk; ++i) {
-                acc += w_tile[i] * x_f32_cur[off + i];
-            }
-#endif
-        }
-
-        float * dst_ptr = (float *)(dst_base + i1 * nb0 + i2 * nb2 + i3 * nb3);
-        *dst_ptr = acc;
-
-#if defined(__AVX2__)
-        if (row_index + 1 < r1) {
-            const char * next_row = ggml_row_ptr_from_index(
-                w_base,
-                row_index + 1,
-                rows_per_i2,
-                rows_per_i3,
-                tiles_i2,
-                tiles_i3,
-                nb01,
-                nb02,
-                nb03);
-            _mm_prefetch(next_row, _MM_HINT_T0);
-        }
-#endif
-    }
-}
-
-#else
-
-static void ggml_mul_mat_mxfp4_decode_avx2(
-        const struct ggml_compute_params * params,
-        const struct ggml_tensor * src0,
-        const struct ggml_tensor * src1,
-              struct ggml_tensor * dst) {
-    (void) params;
-    (void) src0;
-    (void) src1;
-    (void) dst;
-    GGML_ABORT("MXFP4 not enabled in this build");
-}
-
-#endif
 
 //
 // Threading defs
@@ -1648,19 +1270,21 @@ void ggml_compute_forward_mul_mat(
 
     if (fast_decode_ok && src1->ne[1] == 1) {
         const enum ggml_type wtype = src0->type;
+#if defined(__AVX2__)
         if (wtype == GGML_TYPE_Q4_K
 #ifdef GGML_TYPE_Q4_K_M
             || wtype == GGML_TYPE_Q4_K_M
 #endif
         ) {
-            ggml_mul_mat_q4k_decode_avx2(params, src0, src1, dst);
+            ggml_mul_mat_q4k_decode_avx2(params, dst, src0, src1);
             return;
         }
 #ifdef GGML_TYPE_MXFP4
         if (wtype == GGML_TYPE_MXFP4) {
-            ggml_mul_mat_mxfp4_decode_avx2(params, src0, src1, dst);
+            ggml_mul_mat_mxfp4_decode_avx2(params, dst, src0, src1);
             return;
         }
+#endif
 #endif
     }
 
