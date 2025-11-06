@@ -6,7 +6,7 @@ Use the provided benchmark harness to capture end-to-end throughput (prefill + d
 THREADS=16 MODEL=models/gpt-oss-20b-Q4_K_M.gguf ./tools/bench/true_tps.sh
 ```
 
-The script expects a release build of `gptoss-cli` at `./build/bin/gptoss-cli` and requires Python 3 to be available as `python3` on your `PATH`. It will emit a single summary line such as `TRUE_TPS=30.00 (tokens=... , seconds=...)` once all prompts complete.
+The script expects a release build of `gptoss-cli` at `./build/bin/gptoss-cli` and requires Python 3 to be available as `python3` on your `PATH`. It prints a per-prompt progress line summarizing timing and throughput, then emits a final summary line such as `TRUE_TPS=30.00 (tokens=... , seconds=...)` once all prompts complete.
 
 # Benchmark Baseline (Step 0)
 
