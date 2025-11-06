@@ -21,27 +21,9 @@
 static GGML_TLS float * tls_decode_x = NULL;
 static GGML_TLS size_t  tls_decode_x_cap = 0;
 
-void ggml_mul_mat_q4k_decode_avx2(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x);
-
-static inline bool ggml_env_flag(const char * name) {
-    const char * val = getenv(name);
-    return val != NULL && val[0] != '\0' && val[0] != '0';
-}
-
-static void ggml_qgemv_print_once(const char * kernel) {
-    if (!ggml_env_flag("GPTOSS_QGEMV_DEBUG")) {
-        return;
-    }
-    static bool printed = false;
-    if (printed) {
-        return;
-    }
-    printed = true;
-    fprintf(stderr, "[qgemv:%s] fused dequant decode GEMV active (AVX2)\n", kernel);
+static inline int qgemv_dbg(void) {
+    const char * env = getenv("GPTOSS_QGEMV_DEBUG");
+    return env != NULL && env[0] != '\0' && env[0] != '0';
 }
 
 static inline void * ggml_qgemv_tls_realloc(void ** ptr, size_t * cap, size_t need, size_t elem_sz) {
@@ -148,36 +130,42 @@ static inline void ggml_qgemv_accumulate_high32(
 void ggml_mul_mat_q4k_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x) {
+        struct ggml_tensor * w,
+        struct ggml_tensor * x) {
+
+    const struct ggml_tensor * const w_tensor = w;
+    const struct ggml_tensor * const x_tensor = x;
 
 #ifdef GGML_TYPE_Q4_K_M
-    const bool w_is_q4k = w->type == GGML_TYPE_Q4_K || w->type == GGML_TYPE_Q4_K_M;
+    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K || w_tensor->type == GGML_TYPE_Q4_K_M;
 #else
-    const bool w_is_q4k = w->type == GGML_TYPE_Q4_K;
+    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K;
 #endif
     GGML_ASSERT(w_is_q4k);
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
-    GGML_ASSERT(x->ne[1] == 1);
+    GGML_ASSERT(x_tensor->ne[1] == 1);
     GGML_ASSERT(
-        x->type == GGML_TYPE_F32 ||
-        x->type == GGML_TYPE_F16 ||
-        x->type == GGML_TYPE_BF16 ||
-        x->type == GGML_TYPE_Q8_K);
+        x_tensor->type == GGML_TYPE_F32 ||
+        x_tensor->type == GGML_TYPE_F16 ||
+        x_tensor->type == GGML_TYPE_BF16 ||
+        x_tensor->type == GGML_TYPE_Q8_K);
 
-    if (params->ith == 0) {
-        ggml_qgemv_print_once("q4k-avx2");
+    if (params->ith == 0 && qgemv_dbg()) {
+        static int once;
+        if (!once++) {
+            fprintf(stderr, "[qgemv] AVX2 Q4_K decode fastpath enabled (n=1)\n");
+        }
     }
 
     const int ith = params->ith;
     const int nth = params->nth;
 
-    const int64_t cols = w->ne[0];
+    const int64_t cols = w_tensor->ne[0];
     GGML_ASSERT(cols % QK_K == 0);
 
-    const int64_t rows_per_mat = w->ne[1];
-    const int64_t tiles_i2 = w->ne[2] > 0 ? w->ne[2] : 1;
-    const int64_t tiles_i3 = w->ne[3] > 0 ? w->ne[3] : 1;
+    const int64_t rows_per_mat = w_tensor->ne[1];
+    const int64_t tiles_i2 = w_tensor->ne[2] > 0 ? w_tensor->ne[2] : 1;
+    const int64_t tiles_i3 = w_tensor->ne[3] > 0 ? w_tensor->ne[3] : 1;
 
     const int64_t total_rows = rows_per_mat * tiles_i2 * tiles_i3;
     const int64_t r0 = total_rows * ith / nth;
@@ -186,17 +174,17 @@ void ggml_mul_mat_q4k_decode_avx2(
         return;
     }
 
-    GGML_ASSERT(w->nb[0] == ggml_type_size(w->type));
+    GGML_ASSERT(w_tensor->nb[0] == ggml_type_size(w_tensor->type));
     GGML_ASSERT(dst->nb[0] == sizeof(float));
 
-    const size_t nb01 = w->nb[1];
-    const size_t nb02 = w->nb[2];
-    const size_t nb03 = w->nb[3];
+    const size_t nb01 = w_tensor->nb[1];
+    const size_t nb02 = w_tensor->nb[2];
+    const size_t nb03 = w_tensor->nb[3];
 
-    const size_t nb10 = x->nb[0];
-    GGML_ASSERT(nb10 == ggml_type_size(x->type));
-    const size_t nb12 = x->nb[2];
-    const size_t nb13 = x->nb[3];
+    const size_t nb10 = x_tensor->nb[0];
+    GGML_ASSERT(nb10 == ggml_type_size(x_tensor->type));
+    const size_t nb12 = x_tensor->nb[2];
+    const size_t nb13 = x_tensor->nb[3];
 
     const size_t nb0 = dst->nb[0];
     const size_t nb2 = dst->nb[2];
@@ -206,12 +194,12 @@ void ggml_mul_mat_q4k_decode_avx2(
     const int64_t rows_per_i3 = rows_per_mat * tiles_i2;
 
     float * x_f32_tmp = NULL;
-    if (x->type != GGML_TYPE_F32) {
+    if (x_tensor->type != GGML_TYPE_F32) {
         x_f32_tmp = ggml_qgemv_tls_realloc((void **) &tls_decode_x, &tls_decode_x_cap, (size_t) cols, sizeof(float));
     }
 
-    const char * GGML_RESTRICT x_base = (const char *) x->data;
-    const char * GGML_RESTRICT w_base = (const char *) w->data;
+    const char * GGML_RESTRICT x_base = (const char *) x_tensor->data;
+    const char * GGML_RESTRICT w_base = (const char *) w_tensor->data;
     char * GGML_RESTRICT dst_base = (char *) dst->data;
 
     int64_t prev_i2 = -1;
@@ -231,17 +219,17 @@ void ggml_mul_mat_q4k_decode_avx2(
 
             const char * x_ptr = x_base + i2 * nb12 + i3 * nb13;
 
-            if (x->type == GGML_TYPE_F32) {
+            if (x_tensor->type == GGML_TYPE_F32) {
                 x_f32_cur = (const float *) x_ptr;
-            } else if (x->type == GGML_TYPE_F16) {
+            } else if (x_tensor->type == GGML_TYPE_F16) {
                 GGML_ASSERT(x_f32_tmp != NULL);
                 ggml_cpu_fp16_to_fp32((const ggml_fp16_t *) x_ptr, x_f32_tmp, cols);
                 x_f32_cur = x_f32_tmp;
-            } else if (x->type == GGML_TYPE_BF16) {
+            } else if (x_tensor->type == GGML_TYPE_BF16) {
                 GGML_ASSERT(x_f32_tmp != NULL);
                 ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) x_ptr, x_f32_tmp, cols);
                 x_f32_cur = x_f32_tmp;
-            } else if (x->type == GGML_TYPE_Q8_K) {
+            } else if (x_tensor->type == GGML_TYPE_Q8_K) {
                 GGML_ASSERT(x_f32_tmp != NULL);
                 dequantize_row_q8_K((const block_q8_K *) x_ptr, x_f32_tmp, cols);
                 x_f32_cur = x_f32_tmp;
@@ -316,8 +304,8 @@ void ggml_mul_mat_q4k_decode_avx2(
 void ggml_mul_mat_q4k_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x) {
+        struct ggml_tensor * w,
+        struct ggml_tensor * x) {
     (void) params;
     (void) dst;
     (void) w;
