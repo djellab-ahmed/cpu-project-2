@@ -22,6 +22,6 @@
   ],
   "buildPresets": [
     { "name": "build", "configurePreset": "dev" },
-    { "name": "build-release-native", "configurePreset": "release-native", "targets": [ "gptoss-cli" ] }
+    { "name": "build-release-native", "configurePreset": "release-native", "targets": [ "gptoss-cli", "tps-suite" ] }
   ]
 }
