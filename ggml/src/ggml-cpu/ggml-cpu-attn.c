@@ -39,6 +39,11 @@ static GGML_TLS size_t  tls_k_cap = 0;
 static GGML_TLS float * tls_v_buf = NULL;
 static GGML_TLS size_t  tls_v_cap = 0;
 
+static inline bool ggml_env_flag(const char * name) {
+    const char * val = getenv(name);
+    return val != NULL && val[0] != '\0' && val[0] != '0';
+}
+
 #ifndef GGML_ALIGNED_FREE_TAKES_SIZE
 #define GGML_ALIGNED_FREE_TAKES_SIZE 1
 #endif
@@ -206,12 +211,15 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         }
     }
 
-    const char * flash_dbg = getenv("GPTOSS_FLASH_DEBUG");
-    if (flash_dbg != NULL && flash_dbg[0] != '\0' && params->ith == 0) {
-        fprintf(stderr, "[flash-decode] hd=%lld kv=%lld tile=%d\n",
-                (long long) head_dim,
-                (long long) n_kv,
-                tile_tok);
+    if (params->ith == 0 && ggml_env_flag("GPTOSS_FLASH_DEBUG")) {
+        static bool printed = false;
+        if (!printed) {
+            printed = true;
+            fprintf(stderr, "[flash-decode] hd=%lld kv=%lld tile=%d\n",
+                    (long long) head_dim,
+                    (long long) n_kv,
+                    tile_tok);
+        }
     }
 
     const int64_t head_ratio = n_head / n_head_kv;

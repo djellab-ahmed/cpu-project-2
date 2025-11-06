@@ -26,6 +26,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/ggml-cpu.cpp
         ggml-cpu/ggml-cpu-attn.c
         ggml-cpu/ggml-cpu-q4k-avx2.c
+        ggml-cpu/ggml-cpu-mxfp4-avx2.c
         ggml-cpu/repack.cpp
         ggml-cpu/repack.h
         ggml-cpu/hbm.cpp

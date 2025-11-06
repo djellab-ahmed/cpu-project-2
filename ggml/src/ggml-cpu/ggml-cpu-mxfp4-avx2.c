@@ -18,19 +18,16 @@
 #define GGML_TLS __thread
 #endif
 
-static GGML_TLS float * tls_decode_x = NULL;
-static GGML_TLS size_t  tls_decode_x_cap = 0;
-
-void ggml_mul_mat_q4k_decode_avx2(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x);
-
 static inline bool ggml_env_flag(const char * name) {
     const char * val = getenv(name);
     return val != NULL && val[0] != '\0' && val[0] != '0';
 }
+
+void ggml_mul_mat_mxfp4_decode_avx2(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst,
+        const struct ggml_tensor * w,
+        const struct ggml_tensor * x);
 
 static void ggml_qgemv_print_once(const char * kernel) {
     if (!ggml_env_flag("GPTOSS_QGEMV_DEBUG")) {
@@ -82,98 +79,64 @@ static inline const char * ggml_qgemv_row_ptr_from_index(
     return base + i1 * nb01 + i2 * nb02 + i3 * nb03;
 }
 
-static inline void ggml_qgemv_get_scale_min_k4(int j, const uint8_t * q, uint8_t * d, uint8_t * m) {
-    if (j < 4) {
-        *d = q[j] & 63;
-        *m = q[j + 4] & 63;
-    } else {
-        *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
-        *m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);
-    }
-}
+#if defined(__AVX2__) && defined(GGML_TYPE_MXFP4)
 
-#if defined(__AVX2__)
+static GGML_TLS float * tls_decode_x = NULL;
+static GGML_TLS size_t  tls_decode_x_cap = 0;
 
 #include <immintrin.h>
 
-static inline void ggml_qgemv_accumulate_low32(
-        const uint8_t * qbytes,
-        const float * xptr,
+static inline void ggml_mxfp4_accumulate16(const __m128i values,
         const __m256 scale,
-        const __m256 min,
+        const float * GGML_RESTRICT xptr,
         __m256 * acc) {
+    const __m128i lo_i16 = _mm_cvtepi8_epi16(values);
+    const __m128i hi_i16 = _mm_cvtepi8_epi16(_mm_srli_si128(values, 8));
 
-    const __m128i mask0f = _mm_set1_epi16(0x000F);
-    const __m128i zero = _mm_setzero_si128();
+    const __m256i lo_i32 = _mm256_cvtepi16_epi32(lo_i16);
+    const __m256i hi_i32 = _mm256_cvtepi16_epi32(hi_i16);
 
-    for (int off = 0; off < 32; off += 8) {
-        const __m128i raw = _mm_loadl_epi64((const __m128i *)(qbytes + off));
-        const __m128i raw16 = _mm_unpacklo_epi8(raw, zero);
-        const __m128i nib16 = _mm_and_si128(raw16, mask0f);
-        const __m256i nib32 = _mm256_cvtepu16_epi32(nib16);
-        const __m256 nibf = _mm256_cvtepi32_ps(nib32);
-        const __m256 scaled = _mm256_mul_ps(nibf, scale);
-        const __m256 values = _mm256_sub_ps(scaled, min);
-        const __m256 x = _mm256_loadu_ps(xptr + off);
-        const __m256 prod = _mm256_mul_ps(values, x);
-        *acc = _mm256_add_ps(*acc, prod);
-    }
+    __m256 vlo = _mm256_cvtepi32_ps(lo_i32);
+    __m256 vhi = _mm256_cvtepi32_ps(hi_i32);
+
+    vlo = _mm256_mul_ps(vlo, scale);
+    vhi = _mm256_mul_ps(vhi, scale);
+
+    const __m256 x0 = _mm256_loadu_ps(xptr + 0);
+    const __m256 x1 = _mm256_loadu_ps(xptr + 8);
+
+#if defined(__FMA__)
+    *acc = _mm256_fmadd_ps(vlo, x0, *acc);
+    *acc = _mm256_fmadd_ps(vhi, x1, *acc);
+#else
+    *acc = _mm256_add_ps(*acc, _mm256_mul_ps(vlo, x0));
+    *acc = _mm256_add_ps(*acc, _mm256_mul_ps(vhi, x1));
+#endif
 }
 
-static inline void ggml_qgemv_accumulate_high32(
-        const uint8_t * qbytes,
-        const float * xptr,
-        const __m256 scale,
-        const __m256 min,
-        __m256 * acc) {
-
-    const __m128i mask0f = _mm_set1_epi16(0x000F);
-    const __m128i zero = _mm_setzero_si128();
-
-    for (int off = 0; off < 32; off += 8) {
-        const __m128i raw = _mm_loadl_epi64((const __m128i *)(qbytes + off));
-        const __m128i raw16 = _mm_unpacklo_epi8(raw, zero);
-        const __m128i hibits = _mm_srli_epi16(raw16, 4);
-        const __m128i nib16 = _mm_and_si128(hibits, mask0f);
-        const __m256i nib32 = _mm256_cvtepu16_epi32(nib16);
-        const __m256 nibf = _mm256_cvtepi32_ps(nib32);
-        const __m256 scaled = _mm256_mul_ps(nibf, scale);
-        const __m256 values = _mm256_sub_ps(scaled, min);
-        const __m256 x = _mm256_loadu_ps(xptr + off);
-        const __m256 prod = _mm256_mul_ps(values, x);
-        *acc = _mm256_add_ps(*acc, prod);
-    }
-}
-
-void ggml_mul_mat_q4k_decode_avx2(
+void ggml_mul_mat_mxfp4_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
         const struct ggml_tensor * w,
         const struct ggml_tensor * x) {
 
-#ifdef GGML_TYPE_Q4_K_M
-    const bool w_is_q4k = w->type == GGML_TYPE_Q4_K || w->type == GGML_TYPE_Q4_K_M;
-#else
-    const bool w_is_q4k = w->type == GGML_TYPE_Q4_K;
-#endif
-    GGML_ASSERT(w_is_q4k);
+    GGML_ASSERT(w->type == GGML_TYPE_MXFP4);
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
     GGML_ASSERT(x->ne[1] == 1);
     GGML_ASSERT(
         x->type == GGML_TYPE_F32 ||
         x->type == GGML_TYPE_F16 ||
-        x->type == GGML_TYPE_BF16 ||
-        x->type == GGML_TYPE_Q8_K);
+        x->type == GGML_TYPE_BF16);
 
     if (params->ith == 0) {
-        ggml_qgemv_print_once("q4k-avx2");
+        ggml_qgemv_print_once("mxfp4-avx2");
     }
 
     const int ith = params->ith;
     const int nth = params->nth;
 
     const int64_t cols = w->ne[0];
-    GGML_ASSERT(cols % QK_K == 0);
+    GGML_ASSERT(cols % QK_MXFP4 == 0);
 
     const int64_t rows_per_mat = w->ne[1];
     const int64_t tiles_i2 = w->ne[2] > 0 ? w->ne[2] : 1;
@@ -218,6 +181,9 @@ void ggml_mul_mat_q4k_decode_avx2(
     int64_t prev_i3 = -1;
     const float * x_f32_cur = NULL;
 
+    const __m128i lut = _mm_loadu_si128((const __m128i *) kvalues_mxfp4);
+    const __m128i mask0f = _mm_set1_epi8(0x0F);
+
     for (int64_t row_index = r0; row_index < r1; ++row_index) {
         int64_t tmp = row_index;
         const int64_t i3 = tiles_i3 > 0 ? tmp / rows_per_i3 : 0;
@@ -241,47 +207,34 @@ void ggml_mul_mat_q4k_decode_avx2(
                 GGML_ASSERT(x_f32_tmp != NULL);
                 ggml_cpu_bf16_to_fp32((const ggml_bf16_t *) x_ptr, x_f32_tmp, cols);
                 x_f32_cur = x_f32_tmp;
-            } else if (x->type == GGML_TYPE_Q8_K) {
-                GGML_ASSERT(x_f32_tmp != NULL);
-                dequantize_row_q8_K((const block_q8_K *) x_ptr, x_f32_tmp, cols);
-                x_f32_cur = x_f32_tmp;
             } else {
-                GGML_ABORT("Q4_K decode kernel: unsupported activation type");
+                GGML_ABORT("MXFP4 decode kernel: unsupported activation type");
             }
 
             _mm_prefetch((const char *) x_f32_cur, _MM_HINT_T0);
         }
 
         const char * w_row_ptr = w_base + i1 * nb01 + i2 * nb02 + i3 * nb03;
-        const block_q4_K * w_row = (const block_q4_K *) w_row_ptr;
+        const block_mxfp4 * w_row = (const block_mxfp4 *) w_row_ptr;
+
+        GGML_ASSERT(x_f32_cur != NULL);
 
         __m256 acc = _mm256_setzero_ps();
 
-        const int64_t n_blocks = cols / QK_K;
+        const int64_t n_blocks = cols / QK_MXFP4;
         for (int64_t blk = 0; blk < n_blocks; ++blk) {
-            const block_q4_K * w_block = w_row + blk;
-            const uint8_t * qbytes = w_block->qs;
+            const block_mxfp4 * w_block = w_row + blk;
+            const __m256 scale = _mm256_set1_ps(GGML_E8M0_TO_FP32_HALF(w_block->e));
 
-            const float d = GGML_FP16_TO_FP32(w_block->d);
-            const float dmin = GGML_FP16_TO_FP32(w_block->dmin);
+            const __m128i packed = _mm_loadu_si128((const __m128i *) w_block->qs);
+            const __m128i lo_nibbles = _mm_and_si128(packed, mask0f);
+            const __m128i hi_nibbles = _mm_and_si128(_mm_srli_epi16(packed, 4), mask0f);
 
-            uint8_t sc, m;
-            int is = 0;
+            const __m128i lo_vals = _mm_shuffle_epi8(lut, lo_nibbles);
+            const __m128i hi_vals = _mm_shuffle_epi8(lut, hi_nibbles);
 
-            for (int chunk = 0; chunk < QK_K; chunk += 64) {
-                ggml_qgemv_get_scale_min_k4(is + 0, w_block->scales, &sc, &m);
-                const __m256 scale0 = _mm256_set1_ps(d * sc);
-                const __m256 min0 = _mm256_set1_ps(dmin * m);
-                ggml_qgemv_accumulate_low32(qbytes, x_f32_cur + blk * QK_K + chunk, scale0, min0, &acc);
-
-                ggml_qgemv_get_scale_min_k4(is + 1, w_block->scales, &sc, &m);
-                const __m256 scale1 = _mm256_set1_ps(d * sc);
-                const __m256 min1 = _mm256_set1_ps(dmin * m);
-                ggml_qgemv_accumulate_high32(qbytes, x_f32_cur + blk * QK_K + chunk + 32, scale1, min1, &acc);
-
-                qbytes += 32;
-                is += 2;
-            }
+            ggml_mxfp4_accumulate16(lo_vals, scale, x_f32_cur + blk * QK_MXFP4 + 0, &acc);
+            ggml_mxfp4_accumulate16(hi_vals, scale, x_f32_cur + blk * QK_MXFP4 + 16, &acc);
 
             if (blk + 1 < n_blocks) {
                 _mm_prefetch(((const char *) (w_row + blk + 1)) + 256, _MM_HINT_T0);
@@ -290,7 +243,10 @@ void ggml_mul_mat_q4k_decode_avx2(
 
         float acc_buf[8];
         _mm256_storeu_ps(acc_buf, acc);
-        float acc_scalar = acc_buf[0] + acc_buf[1] + acc_buf[2] + acc_buf[3] + acc_buf[4] + acc_buf[5] + acc_buf[6] + acc_buf[7];
+        float acc_scalar = 0.0f;
+        for (int i = 0; i < 8; ++i) {
+            acc_scalar += acc_buf[i];
+        }
 
         float * dst_ptr = (float *)(dst_base + i1 * nb0 + i2 * nb2 + i3 * nb3);
         *dst_ptr = acc_scalar;
@@ -311,9 +267,9 @@ void ggml_mul_mat_q4k_decode_avx2(
     }
 }
 
-#else // !__AVX2__
+#else
 
-void ggml_mul_mat_q4k_decode_avx2(
+void ggml_mul_mat_mxfp4_decode_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
         const struct ggml_tensor * w,
@@ -322,8 +278,7 @@ void ggml_mul_mat_q4k_decode_avx2(
     (void) dst;
     (void) w;
     (void) x;
-    GGML_ABORT("Q4_K decode AVX2 kernel requires AVX2 support");
+    GGML_ABORT("MXFP4 decode AVX2 kernel requires AVX2 support and MXFP4 type");
 }
 
-#endif // __AVX2__
-
+#endif

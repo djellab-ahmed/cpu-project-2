@@ -16,19 +16,6 @@
 #include "ops.h"
 #include "ggml.h"
 
-void ggml_mul_mat_q4k_decode_avx2(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x);
-#ifdef GGML_TYPE_MXFP4
-void ggml_mul_mat_mxfp4_decode_avx2(
-        const struct ggml_compute_params * params,
-        struct ggml_tensor * dst,
-        const struct ggml_tensor * w,
-        const struct ggml_tensor * x);
-#endif
-
 #ifndef GGML_RESTRICT
 #if defined(__clang__) || defined(__GNUC__)
 #define GGML_RESTRICT __restrict__
@@ -57,6 +44,23 @@ static inline const char * ggml_row_ptr_from_index(
     return base + i1 * nb01 + i2 * nb02 + i3 * nb03;
 }
 
+static inline bool ggml_env_flag(const char * name) {
+    const char * val = getenv(name);
+    return val != NULL && val[0] != '\0' && val[0] != '0';
+}
+
+static void ggml_qgemv_dispatch_banner(void) {
+    if (!ggml_env_flag("GPTOSS_QGEMV_DEBUG")) {
+        return;
+    }
+    static bool printed = false;
+    if (printed) {
+        return;
+    }
+    printed = true;
+    fprintf(stderr, "[qgemv] n=1 decode path enabled (Q4_K*/MXFP4, AVX2)\n");
+}
+
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -76,6 +80,7 @@ static inline const char * ggml_row_ptr_from_index(
 #include <limits.h>
 #include <stdarg.h>
 #include <signal.h>
+#include <stdbool.h>
 #if defined(__gnu_linux__)
 #include <syscall.h>
 #endif
@@ -1268,23 +1273,28 @@ void ggml_compute_forward_mul_mat(
         fast_decode_ok = atoi(fast_decode_env) != 0;
     }
 
-    if (fast_decode_ok && src1->ne[1] == 1) {
+    const bool n_is_one = fast_decode_ok && src1->ne[1] == 1;
+    if (n_is_one && params->ith == 0) {
+        ggml_qgemv_dispatch_banner();
+    }
+    if (n_is_one) {
         const enum ggml_type wtype = src0->type;
 #if defined(__AVX2__)
-        if (wtype == GGML_TYPE_Q4_K
+        switch (wtype) {
+        case GGML_TYPE_Q4_K:
 #ifdef GGML_TYPE_Q4_K_M
-            || wtype == GGML_TYPE_Q4_K_M
+        case GGML_TYPE_Q4_K_M:
 #endif
-        ) {
             ggml_mul_mat_q4k_decode_avx2(params, dst, src0, src1);
             return;
-        }
 #ifdef GGML_TYPE_MXFP4
-        if (wtype == GGML_TYPE_MXFP4) {
+        case GGML_TYPE_MXFP4:
             ggml_mul_mat_mxfp4_decode_avx2(params, dst, src0, src1);
             return;
-        }
 #endif
+        default:
+            break;
+        }
 #endif
     }
 

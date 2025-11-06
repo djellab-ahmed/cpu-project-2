@@ -111,6 +111,16 @@ void ggml_compute_forward_cross_entropy_loss_back(const struct ggml_compute_para
 void ggml_compute_forward_opt_step_adamw(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_opt_step_sgd(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+
+// n=1 decode-specialized GEMV (AVX2)
+void ggml_mul_mat_q4k_decode_avx2(const struct ggml_compute_params * params,
+                                  struct ggml_tensor * dst,
+                                  const struct ggml_tensor * src0,
+                                  const struct ggml_tensor * src1);
+void ggml_mul_mat_mxfp4_decode_avx2(const struct ggml_compute_params * params,
+                                    struct ggml_tensor * dst,
+                                    const struct ggml_tensor * src0,
+                                    const struct ggml_tensor * src1);
 #ifdef __cplusplus
 }
 #endif
