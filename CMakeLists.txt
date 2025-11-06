@@ -195,6 +195,11 @@ add_subdirectory(src)
 
 if (GPTOSS_BUILD_TOOLS)
     add_subdirectory(tools)
+    add_executable(tps-suite tools/bench/tps_suite.cpp)
+    target_compile_features(tps-suite PRIVATE cxx_std_17)
+    if (GPTOSS_TOOLS_INSTALL)
+        install(TARGETS tps-suite RUNTIME DESTINATION bin)
+    endif()
 endif()
 
 #

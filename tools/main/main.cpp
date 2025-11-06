@@ -3,18 +3,22 @@
 #include "ggml-cpu.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -24,6 +28,11 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -43,9 +52,156 @@ extern "C" {
 
 namespace {
 
+struct BenchNodeTime {
+    uint64_t t_start_us = 0;
+    uint64_t t_end_us   = 0;
+    int      token_idx  = -1;
+    int      layer_id   = -1;
+    int      op         = 0;
+    char     name[64]   = {0};
+};
+
+struct BenchTrace {
+    std::string out_json;
+    std::atomic<int> token_idx{0};
+    std::map<const ggml_tensor *, BenchNodeTime> times;
+    std::vector<BenchNodeTime> done;
+    bool enabled = false;
+    struct {
+        uint64_t cycles = 0;
+        uint64_t instr = 0;
+        uint64_t br_miss = 0;
+        uint64_t l1d_miss = 0;
+        uint64_t llc_miss = 0;
+        uint64_t dtlb_miss = 0;
+    } pc;
+};
+
+static inline uint64_t now_us() {
+    using namespace std::chrono;
+    return duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static int perf_open_leader(pid_t pid, int cpu, uint64_t type, uint64_t config, unsigned long flags) {
+    struct perf_event_attr pea {};
+    pea.size = sizeof(pea);
+    pea.type = type;
+    pea.config = config;
+    pea.disabled = 1;
+    pea.exclude_kernel = 0;
+    pea.exclude_hv = 0;
+    pea.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+    return syscall(__NR_perf_event_open, &pea, pid, cpu, -1, flags);
+}
+
+static int perf_open_follow(pid_t pid, int cpu, int group_fd, uint64_t type, uint64_t config) {
+    struct perf_event_attr pea {};
+    pea.size = sizeof(pea);
+    pea.type = type;
+    pea.config = config;
+    pea.disabled = 0;
+    pea.exclude_kernel = 0;
+    pea.exclude_hv = 0;
+    pea.read_format = PERF_FORMAT_GROUP | PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+    return syscall(__NR_perf_event_open, &pea, pid, cpu, group_fd, 0);
+}
+
+struct PerfGroup {
+    int fd_leader = -1;
+    int fd_instr  = -1;
+    int fd_brm    = -1;
+    int fd_l1d    = -1;
+    int fd_llc    = -1;
+    int fd_dtlb   = -1;
+    bool ok       = false;
+
+    ~PerfGroup() {
+        close_all();
+    }
+
+    static uint64_t hw_cache_config(uint64_t cache, uint64_t op, uint64_t res) {
+        return cache | (op << 8) | (res << 16);
+    }
+
+    bool open_for_self() {
+        fd_leader = perf_open_leader(0, -1, PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES, 0);
+        if (fd_leader < 0) {
+            return false;
+        }
+        fd_instr = perf_open_follow(0, -1, fd_leader, PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS);
+        fd_brm   = perf_open_follow(0, -1, fd_leader, PERF_TYPE_HARDWARE, PERF_COUNT_HW_BRANCH_MISSES);
+        fd_l1d   = perf_open_follow(0, -1, fd_leader, PERF_TYPE_HW_CACHE,
+                                    hw_cache_config(PERF_COUNT_HW_CACHE_L1D,
+                                                    PERF_COUNT_HW_CACHE_OP_READ,
+                                                    PERF_COUNT_HW_CACHE_RESULT_MISS));
+        fd_llc   = perf_open_follow(0, -1, fd_leader, PERF_TYPE_HW_CACHE,
+                                    hw_cache_config(PERF_COUNT_HW_CACHE_LL,
+                                                    PERF_COUNT_HW_CACHE_OP_READ,
+                                                    PERF_COUNT_HW_CACHE_RESULT_MISS));
+        fd_dtlb  = perf_open_follow(0, -1, fd_leader, PERF_TYPE_HW_CACHE,
+                                    hw_cache_config(PERF_COUNT_HW_CACHE_DTLB,
+                                                    PERF_COUNT_HW_CACHE_OP_READ,
+                                                    PERF_COUNT_HW_CACHE_RESULT_MISS));
+        ok = fd_instr >= 0 && fd_brm >= 0 && fd_l1d >= 0 && fd_llc >= 0 && fd_dtlb >= 0;
+        if (!ok) {
+            close_all();
+        }
+        return ok;
+    }
+
+    void start() {
+        if (fd_leader >= 0) {
+            ioctl(fd_leader, PERF_EVENT_IOC_RESET, 0);
+            ioctl(fd_leader, PERF_EVENT_IOC_ENABLE, 0);
+        }
+    }
+
+    void stop() {
+        if (fd_leader >= 0) {
+            ioctl(fd_leader, PERF_EVENT_IOC_DISABLE, 0);
+        }
+    }
+
+    bool read_group(uint64_t & cycles, uint64_t & instr, uint64_t & brm,
+                    uint64_t & l1d, uint64_t & llc, uint64_t & dtlb) {
+        struct {
+            uint64_t nr;
+            uint64_t time_enabled;
+            uint64_t time_running;
+            struct { uint64_t value; uint64_t id; } values[6];
+        } data {};
+        if (fd_leader < 0) {
+            return false;
+        }
+        if (::read(fd_leader, &data, sizeof(data)) < 0) {
+            return false;
+        }
+        cycles = data.values[0].value;
+        instr  = data.values[1].value;
+        brm    = data.values[2].value;
+        l1d    = data.values[3].value;
+        llc    = data.values[4].value;
+        dtlb   = data.values[5].value;
+        return true;
+    }
+
+    void close_all() {
+        if (fd_leader >= 0) { ::close(fd_leader); }
+        if (fd_instr  >= 0) { ::close(fd_instr); }
+        if (fd_brm    >= 0) { ::close(fd_brm); }
+        if (fd_l1d    >= 0) { ::close(fd_l1d); }
+        if (fd_llc    >= 0) { ::close(fd_llc); }
+        if (fd_dtlb   >= 0) { ::close(fd_dtlb); }
+        fd_leader = fd_instr = fd_brm = fd_l1d = fd_llc = fd_dtlb = -1;
+        ok = false;
+    }
+};
+
 struct options {
     std::string model_path;
     std::string prompt;
+    std::string prompt_file;
+    std::string bench_json;
     int32_t     threads        = -1;
     int32_t     threads_batch  = -1;
     uint32_t    context_size   = 0;
@@ -63,14 +219,116 @@ struct options {
     bool        measure_tps    = false;
 };
 
+static bool bench_eval_cb(struct ggml_tensor * tensor, bool ask, void * user_data) {
+    auto * trace = static_cast<BenchTrace *>(user_data);
+    if (!trace || !trace->enabled) {
+        return false;
+    }
+
+    if (ask) {
+        BenchNodeTime entry;
+        entry.t_start_us = now_us();
+        entry.op = static_cast<int>(tensor->op);
+        const char * nm = ggml_get_name(tensor);
+        if (nm && *nm) {
+            std::snprintf(entry.name, sizeof(entry.name), "%s", nm);
+        }
+        trace->times[tensor] = entry;
+        return true;
+    }
+
+    auto it = trace->times.find(tensor);
+    if (it != trace->times.end()) {
+        it->second.t_end_us = now_us();
+        it->second.token_idx = trace->token_idx.load();
+        if (it->second.name[0] == 'L' && std::isdigit(static_cast<unsigned char>(it->second.name[1])) &&
+            std::isdigit(static_cast<unsigned char>(it->second.name[2]))) {
+            it->second.layer_id = (it->second.name[1] - '0') * 10 + (it->second.name[2] - '0');
+        }
+        trace->done.emplace_back(it->second);
+        trace->times.erase(it);
+    }
+
+    return false;
+}
+
+static void bench_on_token_generated(BenchTrace & trace) {
+    if (trace.enabled) {
+        trace.token_idx.fetch_add(1);
+    }
+}
+
+static void bench_perf_begin(PerfGroup & group, BenchTrace & trace) {
+    if (!trace.enabled) {
+        return;
+    }
+    if (group.open_for_self()) {
+        group.start();
+    }
+}
+
+static void bench_perf_end(PerfGroup & group, BenchTrace & trace) {
+    if (!trace.enabled) {
+        return;
+    }
+    group.stop();
+    uint64_t cycles = 0, instr = 0, brm = 0, l1d = 0, llc = 0, dtlb = 0;
+    if (group.read_group(cycles, instr, brm, l1d, llc, dtlb)) {
+        trace.pc.cycles = cycles;
+        trace.pc.instr = instr;
+        trace.pc.br_miss = brm;
+        trace.pc.l1d_miss = l1d;
+        trace.pc.llc_miss = llc;
+        trace.pc.dtlb_miss = dtlb;
+    }
+}
+
+static void bench_write_json(const BenchTrace & trace, int tokens_generated, double elapsed_s) {
+    if (!trace.enabled || trace.out_json.empty()) {
+        return;
+    }
+
+    std::FILE * f = std::fopen(trace.out_json.c_str(), "w");
+    if (!f) {
+        return;
+    }
+
+    std::fprintf(f,
+                 "{\n  \"summary\": {\"tokens_generated\": %d, \"elapsed_s\": %.6f,\n"
+                 "    \"cycles\": %" PRIu64 ", \"instructions\": %" PRIu64 ", \"branch_misses\": %" PRIu64 ",\n"
+                 "    \"l1d_miss\": %" PRIu64 ", \"llc_miss\": %" PRIu64 ", \"dtlb_miss\": %" PRIu64 "\n"
+                 "  },\n  \"nodes\": [\n",
+                 tokens_generated, elapsed_s,
+                 trace.pc.cycles, trace.pc.instr, trace.pc.br_miss,
+                 trace.pc.l1d_miss, trace.pc.llc_miss, trace.pc.dtlb_miss);
+
+    for (size_t i = 0; i < trace.done.size(); ++i) {
+        const auto & entry = trace.done[i];
+        const uint64_t dur = entry.t_end_us > entry.t_start_us ? entry.t_end_us - entry.t_start_us : 0ULL;
+        std::fprintf(f,
+                     "    {\"token\": %d, \"layer\": %d, \"op\": %d, \"name\": \"%s\", \"dur_us\": %" PRIu64 "}%s\n",
+                     entry.token_idx,
+                     entry.layer_id,
+                     entry.op,
+                     entry.name,
+                     dur,
+                     (i + 1 < trace.done.size()) ? "," : "");
+    }
+
+    std::fprintf(f, "  ]\n}\n");
+    std::fclose(f);
+}
+
 void print_usage(const char * program) {
     std::cerr << "Usage: " << program << " [options]\n"
               << "\nRequired:\n"
               << "  -m, --model PATH         Path to the GGUF model file\n"
               << "\nOptional:\n"
               << "  -p, --prompt TEXT        Text prompt to evaluate\n"
+              << "      --prompt-file PATH   Load prompt text from PATH\n"
               << "  -n, --n-predict N        Number of tokens to generate (default unlimited; set -1 for EOS-driven)\n"
               << "      --measure-tps        Run the 10 standard prompts and report True TPS statistics\n"
+              << "      --bench-json PATH    Enable tracing and write per-run metrics JSON\n"
               << "  -t, --threads N          Threads for token generation\n"
               << "  -tb, --threads-batch N   Threads for prompt ingestion\n"
               << "      --ctx-size N         Override context window\n"
@@ -179,6 +437,13 @@ bool parse_arguments(int argc, char ** argv, options & opts) {
                 return false;
             }
             opts.prompt = value;
+        } else if (arg == "--prompt-file") {
+            const char * value = require_value(++i);
+            if (!value) {
+                std::cerr << "Missing path for --prompt-file\n";
+                return false;
+            }
+            opts.prompt_file = value;
         } else if (arg == "-n" || arg == "--n-predict") {
             const char * value = require_value(++i);
             if (!parse_int(arg.c_str(), value, opts.n_predict)) {
@@ -256,13 +521,33 @@ bool parse_arguments(int argc, char ** argv, options & opts) {
             if (!parse_int(arg.c_str(), value, opts.repeat_last_n)) {
                 return false;
             }
+        } else if (arg == "--bench-json") {
+            const char * value = require_value(++i);
+            if (!value) {
+                std::cerr << "Missing path for --bench-json\n";
+                return false;
+            }
+            opts.bench_json = value;
         } else if (arg == "--measure-tps") {
             opts.measure_tps = true;
+        } else if (arg == "--") {
+            break;
         } else {
             std::cerr << "Unrecognized argument: " << arg << "\n";
             print_usage(argv[0]);
             return false;
         }
+    }
+
+    if (!opts.prompt_file.empty()) {
+        std::ifstream pf(opts.prompt_file);
+        if (!pf) {
+            std::cerr << "Failed to read prompt file: " << opts.prompt_file << "\n";
+            return false;
+        }
+        std::ostringstream ss;
+        ss << pf.rdbuf();
+        opts.prompt = ss.str();
     }
 
     if (opts.model_path.empty()) {
@@ -375,6 +660,14 @@ struct generation_metrics {
 bool run_generation(const options & opts, gptoss_model * model, const std::string & prompt, bool stream_tokens, generation_metrics & metrics) {
     const gptoss_vocab * vocab = gptoss_model_get_vocab(model);
 
+    BenchTrace bench;
+    bench.out_json = opts.bench_json;
+    const char * sched_debug_env = std::getenv("GGML_SCHED_DEBUG");
+    const int sched_debug = sched_debug_env ? std::atoi(sched_debug_env) : 0;
+    bench.enabled = (sched_debug >= 2) || !bench.out_json.empty();
+    bench.token_idx.store(0);
+    PerfGroup perf_group;
+
     std::vector<gptoss_token> prompt_tokens;
     try {
         prompt_tokens = tokenize_prompt(vocab, prompt);
@@ -409,6 +702,11 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     ctx_params.n_ubatch = std::min<uint32_t>(ctx_params.n_ctx, ubatch_limit);
     ctx_params.n_seq_max = 1;
 
+    if (bench.enabled) {
+        ctx_params.cb_eval = bench_eval_cb;
+        ctx_params.cb_eval_user_data = &bench;
+    }
+
     gptoss_context * ctx = gptoss_init_from_model(model, ctx_params);
     if (!ctx) {
         std::cerr << "Failed to create inference context\n";
@@ -427,6 +725,7 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
             prompt_tokens.end());
     }
 
+    bench_perf_begin(perf_group, bench);
     auto start_time = std::chrono::steady_clock::now();
 
     while (processed < prompt_tokens.size()) {
@@ -572,6 +871,7 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
         }
 
         ++generated_tokens;
+        bench_on_token_generated(bench);
 
         if (repeat_window > 0) {
             if (recent_tokens.size() == repeat_window) {
@@ -589,6 +889,7 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     }
 
     auto end_time = std::chrono::steady_clock::now();
+    bench_perf_end(perf_group, bench);
 
     if (stream_tokens) {
         std::cout << std::endl;
@@ -596,6 +897,8 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
 
     metrics.generated_tokens = generated_tokens;
     metrics.elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time).count();
+
+    bench_write_json(bench, static_cast<int>(generated_tokens), metrics.elapsed_seconds);
 
     gptoss_free(ctx);
     return true;

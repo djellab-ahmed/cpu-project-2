@@ -1,0 +1,29 @@
+### Prompt 0
+Write a short paragraph about the importance of unit testing in C++.
+
+### Prompt 1
+List five ways to optimize matrix-vector kernels on modern x86 CPUs.
+
+### Prompt 2
+Explain what speculative decoding is and when it helps.
+
+### Prompt 3
+Summarize the differences between Q4_1 and Q4_K_M quantization.
+
+### Prompt 4
+Describe how online softmax works in attention.
+
+### Prompt 5
+Provide a step-by-step recipe for making pancakes.
+
+### Prompt 6
+Explain the tradeoffs of using huge pages for KV caches.
+
+### Prompt 7
+Describe why nth_element is faster than full sort for top-k sampling.
+
+### Prompt 8
+Write a two-sentence story set on Mars.
+
+### Prompt 9
+Give a one-paragraph overview of AVX2 vs. AVX-512 for dot-product workloads.

@@ -1,124 +1,95 @@
-# Benchmark Baseline (Step 0)
+# Phase-0 TPS Benchmarking
 
-## Overview
+Use this checklist every time you want to confirm throughput after a change. It keeps the build, benchmark suite, and diagnostics consistent with the Phase-0 instrumentation.
 
-This repo includes a reproducible baseline harness to measure decode TPS independently of prefill time.
+1. **Build (release)**
+   ```bash
+   cmake --preset release-native
+   cmake --build --preset build-release-native -j"$(nproc)"
+   ```
 
-Release builds are pinned via CMakePresets.json with OpenMP on and BLAS off.
+2. **(Optional) One warm-up run**
+   Keeps caches/JITs/filesystem warm so your three measured runs are stable.
+   ```bash
+   ./build/bin/gptoss-cli -m models/gpt-oss-20b-Q4_K_M.gguf -t 16 -n 64 --prompt "warmup" >/dev/null
+   ```
 
-## Build (choose one)
+3. **Run the Phase-0 suite (3× and average)**
+   Use the same 10 prompts, same model, same threads, same n-predict as your baseline.
+   ```bash
+   # Run 1
+   ./tools/bench/baseline.sh \
+     models/gpt-oss-20b-Q4_K_M.gguf 16 256 \
+     tools/bench/prompts10.txt tools/bench/logs/suite_1.json
 
-```bash
-# Native CPU flags (recommended on the target machine)
-cmake --preset release-native
-cmake --build --preset build-release-native -j $(nproc)
+   # Run 2
+   ./tools/bench/baseline.sh \
+     models/gpt-oss-20b-Q4_K_M.gguf 16 256 \
+     tools/bench/prompts10.txt tools/bench/logs/suite_2.json
 
-# Or: portable build
-cmake --preset release-portable
-cmake --build --preset build-release-portable -j $(nproc)
-```
+   # Run 3
+   ./tools/bench/baseline.sh \
+     models/gpt-oss-20b-Q4_K_M.gguf 16 256 \
+     tools/bench/prompts10.txt tools/bench/logs/suite_3.json
 
-## Run the baseline
+   # Quickly read the True TPS
+   jq -r '.suite.true_tps' tools/bench/logs/suite_1.json
+   jq -r '.suite.true_tps' tools/bench/logs/suite_2.json
+   jq -r '.suite.true_tps' tools/bench/logs/suite_3.json
 
-```bash
-# Run at 16 threads (adjust as needed)
-tools/bench/run.sh 16
-```
+   # Compute the mean and stdev (helper)
+   python3 - <<'PY'
+   import json, sys, statistics as st, glob
+   vals=[json.load(open(p))["suite"]["true_tps"] for p in glob.glob("tools/bench/logs/suite_*.json")]
+   print("runs:", vals, "\nmean:", sum(vals)/len(vals), "stdev:", st.pstdev(vals))
+   PY
+   ```
+   Acceptance check: mean stable within ±1% across the three runs.
 
-## What it does
+4. **Capture per-token traces (diagnostics)**
+   Enable JSON node timing per run (already wired by Phase 0).
+   ```bash
+   GGML_SCHED_DEBUG=2 \
+   ./build/bin/gptoss-cli \
+     -m models/gpt-oss-20b-Q4_K_M.gguf \
+     -t 16 -n 256 \
+     --prompt-file tools/bench/prompts10.txt \
+     --bench-json /tmp/bench_trace_after.json
 
-- pins to NUMA node 0, binds threads to cores 0..THREADS-1
-- sets OMP_NUM_THREADS=$THREADS, disables multi-threading in other BLAS libs
-- runs perf stat with core cache / branch metrics
-- executes: `./gptoss_main --threads $THREADS --prompt "<pangram>" --n-predict 512`
+   jq '.nodes | group_by(.name) | map({name: .[0].name, total_us: (map(.dur_us)|add)}) | sort_by(.total_us) | reverse[:20]' \
+     /tmp/bench_trace_after.json
+   ```
 
-## TPS Definition
+5. **Cross-check with perf (one wrapped suite run)**
+   Confirms CPU-side changes (LLC/TLB/branch).
+   ```bash
+   perf stat -e cycles,instructions,branch-misses,L1-dcache-load-misses,LLC-load-misses \
+     ./tools/bench/baseline.sh \
+       models/gpt-oss-20b-Q4_K_M.gguf 16 256 \
+       tools/bench/prompts10.txt tools/bench/logs/suite_perf.json
+   ```
 
-If the binary prints tokens/s (decode only), use that directly.
+6. **A/B compare vs baseline**
+   ```bash
+   jq -r '.suite.true_tps' tools/bench/logs/suite_before.json
+   jq -r '.suite.true_tps' tools/bench/logs/suite_after.json
 
-Otherwise compute:
-`TPS = N_PRED / elapsed_decode_seconds` with `N_PRED=512`.
+   paste <(jq -r '.nodes|group_by(.name)|map({k:.[0].name,v:(map(.dur_us)|add)})|from_entries|to_entries|sort_by(.key)|.[]|"\(.key)\t\(.value)"' /tmp/bench_trace_before.json) \
+         <(jq -r '.nodes|group_by(.name)|map({k:.[0].name,v:(map(.dur_us)|add)})|from_entries|to_entries|sort_by(.key)|.[]|"\(.key)\t\(.value)"' /tmp/bench_trace_after.json) \
+   | awk -F'\t' 'BEGIN{printf "%-32s %12s %12s %8s\n","node","before_us","after_us","delta%"} {if(NF==4){b=$2;a=$4;d=(b-a)/b*100;printf "%-32s %12d %12d %7.1f%%\n",$1,b,a,d}}'
+   ```
 
-From perf output, parse the line containing: `X.XXXXX seconds time elapsed`.
+7. **One-liner for quick TPS check**
+   ```bash
+   ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 256 tools/bench/prompts10.txt /tmp/suite.json >/dev/null && \
+   jq -r '.suite.true_tps' /tmp/suite.json
+   ```
 
-## Example: compute TPS from perf (optional)
+## Tips for clean comparisons
 
-```bash
-N_PRED=512
-tools/bench/run.sh 16 2>perf.out || true
-ELAPSED=$(awk '/seconds time elapsed/{print $1}' perf.out)
-python - <<'PY'
-n_pred = int("${N_PRED}")
-elapsed = float("${ELAPSED}") if "${ELAPSED}" else float("nan")
-print(f"Computed TPS (n_pred/elapsed): {n_pred/elapsed:.2f}" if elapsed==elapsed else "Could not parse elapsed time.")
-PY
-```
+- Fix temperature=0.0 and the same seed if your CLI exposes them, so token paths are identical.
+- Keep prompts, n_predict, threads constant between runs.
+- Run on an idle machine; disable CPU frequency scaling if possible (governor performance).
+- If variance >1.5%, increase `n_predict` (e.g., 512) so decode dominates.
 
-## Notes
-
-Release builds define NDEBUG. If extra logging exists, disable via your runtime flag (e.g., --quiet) during benchmarks.
-
-You can switch between release-native and release-portable without editing CMakeLists.txt.
-
-## Troubleshooting
-
-- Make sure numactl and perf are installed (`sudo apt-get install numactl linux-tools-common`).
-- Ensure gptoss_main exists in the repo root or update the script path accordingly.
-
-## Quick start
-
-### Build (native Release)
-```bash
-cmake --preset release-native
-cmake --build --preset build-release-native -j"$(nproc)"
-
-Download model (HF CLI)
-./scripts/hf_download.sh
-# Outputs: models/gpt-oss-20b-Q4_K_M.gguf
-
-Run a quick bench
-./tools/bench/run.sh 16
-
-Warm up the model once before timing (recommended)
-./build/bin/gptoss-cli -m models/gpt-oss-20b-Q4_K_M.gguf -p warmup -n 64 -t 16 -tb 16 --ubatch-size 1024 --numa none >/dev/null 2>&1
-
-Reproducible TPS baseline + log (SMT / hyper-threaded pinning)
-MODE=ht ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
-# Logs are saved under tools/bench/logs/
-
-Prefer physical-core pinning instead of SMT
-MODE=phys ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
-
-Optional: enable memory locking (requires ulimit -l)
-ENABLE_MLOCK=1 MODE=ht ./tools/bench/baseline.sh models/gpt-oss-20b-Q4_K_M.gguf 16 1024 8192
-
-Note on --mlock
-
-If you see an mlock warning, either drop --mlock or raise limits:
-
-sudo sh -c 'echo "* soft memlock unlimited" >> /etc/security/limits.conf'
-sudo sh -c 'echo "* hard memlock unlimited" >> /etc/security/limits.conf'
-ulimit -l unlimited
-
-
----
-
-### Acceptance checks (run before committing)
-1) `bash -n tools/bench/run.sh && bash -n tools/bench/baseline.sh` passes.  
-2) `cmake --preset release-native && cmake --build --preset build-release-native -j"$(nproc)"` succeeds and produces `./build/bin/gptoss-cli`.  
-3) `./scripts/hf_download.sh` creates `models/gpt-oss-20b-Q4_K_M.gguf` (no commit of model).  
-4) `./tools/bench/run.sh 2` executes without errors (skip perf counters automatically if unsupported).  
-5) `.gitignore` excludes `build/`, `models/*` (except README/.gitkeep), logs, and typical local artifacts.
-
----
-
-### Commit & PR
-- Commit in logical units with messages:
-  - `bench: standardize run.sh on gptoss-cli with perf gating`
-  - `bench: add baseline.sh with logging under tools/bench/logs`
-  - `build: add CMakePresets.json (release-native)`
-  - `repo: .gitignore for builds/models/logs/env`
-  - `scripts: add hf_download.sh`
-  - `docs: update README quick start (build/bench/hf/memlock)`
-- Open a PR titled: **“Bench cleanup: standardize on gptoss-cli, presets, .gitignore, HF helper”**  
-- PR description: summarize the 4 objectives and list the acceptance checks.
+With this checklist you have repeatable TPS numbers, per-token traces, and perf counters ready to spot regressions after each optimization.
