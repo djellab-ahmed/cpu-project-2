@@ -139,12 +139,7 @@ void ggml_mul_mat_q4k_decode_avx2(
     const struct ggml_tensor * const w_tensor = w;
     const struct ggml_tensor * const x_tensor = x;
 
-#ifdef GGML_TYPE_Q4_K_M
-    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K || w_tensor->type == GGML_TYPE_Q4_K_M;
-#else
-    const bool w_is_q4k = w_tensor->type == GGML_TYPE_Q4_K;
-#endif
-    GGML_ASSERT(w_is_q4k);
+    GGML_ASSERT(ggml_cpu_is_q4k_family(w_tensor->type));
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
     GGML_ASSERT(x_tensor->ne[1] == 1);
     GGML_ASSERT(

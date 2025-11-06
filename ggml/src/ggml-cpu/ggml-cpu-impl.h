@@ -27,6 +27,19 @@ struct ggml_compute_params {
 };
 
 
+static inline bool ggml_cpu_is_q4k_family(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_Q4_K:
+#ifdef GGML_TYPE_Q4_K_M
+        case GGML_TYPE_Q4_K_M:
+#endif
+            return true;
+        default:
+            return false;
+    }
+}
+
+
 #if defined(_MSC_VER)
 
 #define m512bh(p) p

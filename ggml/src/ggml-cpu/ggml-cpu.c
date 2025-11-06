@@ -1265,21 +1265,16 @@ void ggml_compute_forward_mul_mat(
         const struct ggml_tensor * X = src1;
 
         if (fast_decode_ok && n_is_one) {
-            switch (W->type) {
-                case GGML_TYPE_Q4_K:
-#ifdef GGML_TYPE_Q4_K_M
-                case GGML_TYPE_Q4_K_M:
-#endif
-                    ggml_mul_mat_q4k_decode_avx2(params, dst, W, X);
-                    return;
-#ifdef GGML_TYPE_MXFP4
-                case GGML_TYPE_MXFP4:
-                    ggml_mul_mat_mxfp4_decode_avx2(params, dst, W, X);
-                    return;
-#endif
-                default:
-                    break;
+            if (ggml_cpu_is_q4k_family(W->type)) {
+                ggml_mul_mat_q4k_decode_avx2(params, dst, W, X);
+                return;
             }
+#ifdef GGML_TYPE_MXFP4
+            if (W->type == GGML_TYPE_MXFP4) {
+                ggml_mul_mat_mxfp4_decode_avx2(params, dst, W, X);
+                return;
+            }
+#endif
         }
     }
 #endif // __AVX2__
