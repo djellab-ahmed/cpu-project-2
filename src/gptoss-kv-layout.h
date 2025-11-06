@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "ggml.h"
+#include "ggml-backend.h"
 
 struct gptoss_kv_view {
     void * base         = nullptr;
@@ -31,6 +32,8 @@ struct gptoss_kv_view {
     bool interleaved    = true;
     bool hugepages      = false;
     bool via_mmap       = false;
+
+    ggml_backend_buffer_t buffer = nullptr;
 };
 
 int32_t gptoss_kv_default_tile(int64_t head_dim);

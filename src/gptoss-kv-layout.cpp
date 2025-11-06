@@ -191,11 +191,24 @@ bool gptoss_kv_alloc(gptoss_kv_view &view,
     view.via_mmap     = via_mmap;
     view.interleaved  = true;
 
+    if (view.buffer) {
+        ggml_backend_buffer_free(view.buffer);
+    }
+    view.buffer = ggml_backend_cpu_buffer_from_ptr(view.base, view.bytes);
+    if (!view.buffer) {
+        gptoss_kv_free(view);
+        return false;
+    }
+
     gptoss_kv_debug_once(view, "alloc");
     return true;
 }
 
 void gptoss_kv_free(gptoss_kv_view &view) {
+    if (view.buffer) {
+        ggml_backend_buffer_free(view.buffer);
+        view.buffer = nullptr;
+    }
     if (!view.base) {
         return;
     }
@@ -246,6 +259,9 @@ struct ggml_tensor * gptoss_make_k_view(struct ggml_context *ctx,
     t->nb[1] = (int64_t) view.stride_head_bytes;
     t->nb[2] = (int64_t) view.stride_token_bytes;
     t->nb[3] = (int64_t) view.stride_stream_bytes;
+    if (view.buffer) {
+        GGML_ASSERT(ggml_backend_tensor_alloc(view.buffer, t, t->data) == GGML_STATUS_SUCCESS);
+    }
     return t;
 }
 
@@ -261,5 +277,8 @@ struct ggml_tensor * gptoss_make_v_view(struct ggml_context *ctx,
     t->nb[1] = (int64_t) view.stride_head_bytes;
     t->nb[2] = (int64_t) view.stride_token_bytes;
     t->nb[3] = (int64_t) view.stride_stream_bytes;
+    if (view.buffer) {
+        GGML_ASSERT(ggml_backend_tensor_alloc(view.buffer, t, t->data) == GGML_STATUS_SUCCESS);
+    }
     return t;
 }
