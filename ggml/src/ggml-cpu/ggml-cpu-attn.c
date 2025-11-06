@@ -207,7 +207,12 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         ensure_tls_buffer(&tls_v_buf, &tls_v_cap, (size_t) head_dim);
     }
 
-    int tile_tok = 256;
+    // Tile selection precedence: env > op_params (graph) > default
+    int tile_tok = 0;
+    memcpy(&tile_tok, &dst->op_params[4], sizeof(int));
+    if (tile_tok < 32 || tile_tok > 2048) {
+        tile_tok = 256;
+    }
     const char * tile_env = getenv("GPTOSS_FLASH_TILE");
     if (tile_env) {
         int tmp = atoi(tile_env);
@@ -255,6 +260,8 @@ void ggml_compute_forward_flash_attn_decode_cpu(
             const int64_t tile_n = (t0 + tile_tok <= n_kv) ? tile_tok : (n_kv - t0);
 
 #if defined(__AVX2__)
+            // Prefetch the beginning of the next tile for both K and V; with interleaved KV layout,
+            // these addresses lie close together and warm the same cache lines/TLB entries.
             if (t0 + tile_n < n_kv) {
                 const char * k_next = (const char *) k->data
                                      + kv_head * k_nb1 + (t0 + tile_n) * k_nb2 + stream * k_nb3;
