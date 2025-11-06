@@ -1257,25 +1257,32 @@ void ggml_compute_forward_mul_mat(
     }
 
     const bool n_is_one = (src1->ne[1] == 1);
+
+// n=1 decode fast-path for quantized weights (AVX2)
 #if defined(__AVX2__)
-    if (fast_decode_ok && n_is_one) {
-        switch (src0->type) {
-        case GGML_TYPE_Q4_K:
+    {
+        const struct ggml_tensor * W = src0;
+        const struct ggml_tensor * X = src1;
+
+        if (fast_decode_ok && n_is_one) {
+            switch (W->type) {
+                case GGML_TYPE_Q4_K:
 #ifdef GGML_TYPE_Q4_K_M
-        case GGML_TYPE_Q4_K_M:
+                case GGML_TYPE_Q4_K_M:
 #endif
-            ggml_mul_mat_q4k_decode_avx2(params, dst, (struct ggml_tensor *) src0, (struct ggml_tensor *) src1);
-            return;
+                    ggml_mul_mat_q4k_decode_avx2(params, dst, W, X);
+                    return;
 #ifdef GGML_TYPE_MXFP4
-        case GGML_TYPE_MXFP4:
-            ggml_mul_mat_mxfp4_decode_avx2(params, dst, (struct ggml_tensor *) src0, (struct ggml_tensor *) src1);
-            return;
+                case GGML_TYPE_MXFP4:
+                    ggml_mul_mat_mxfp4_decode_avx2(params, dst, W, X);
+                    return;
 #endif
-        default:
-            break;
+                default:
+                    break;
+            }
         }
     }
-#endif
+#endif // __AVX2__
 
     enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
     ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;

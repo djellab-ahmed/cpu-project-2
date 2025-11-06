@@ -46,7 +46,7 @@ static inline bool ggml_env_flag(const char * name) {
 
 static inline int flash_dbg(void) {
     const char * env = getenv("GPTOSS_FLASH_DEBUG");
-    return env != NULL && env[0] != '\0' && env[0] != '0';
+    return env && *env && *env != '0';
 }
 
 #ifndef GGML_ALIGNED_FREE_TAKES_SIZE
