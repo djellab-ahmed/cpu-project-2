@@ -3,6 +3,7 @@
 #include "gptoss-batch.h"
 #include "gptoss-graph.h"
 #include "gptoss-kv-cells.h"
+#include "gptoss-kv-layout.h"
 #include "gptoss-memory.h"
 
 #include <unordered_map>
@@ -147,6 +148,8 @@ public:
     ggml_tensor * get_k(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il, uint32_t n_kv, const slot_info & sinfo) const;
 
+    bool build_interleaved_view(int32_t il, uint32_t n_kv, const slot_info & sinfo, gptoss_kv_view &view) const;
+
     // store k_cur and v_cur in the cache based on the provided head location
     ggml_tensor * cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const;
     ggml_tensor * cpy_v(ggml_context * ctx, ggml_tensor * v_cur, ggml_tensor * v_idxs, int32_t il, const slot_info & sinfo) const;
@@ -183,6 +186,8 @@ public:
 
     void set_input_kq_mask   (ggml_tensor * dst, const gptoss_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const gptoss_ubatch * ubatch) const;
+    bool should_use_interleaved() const;
+    const gptoss_kv_view * ensure_interleaved(int32_t il, uint32_t n_kv, const gptoss_kv_cache::slot_info & sinfo) const;
 
 private:
     const gptoss_model & model;
@@ -339,6 +344,8 @@ public:
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const gptoss_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const gptoss_ubatch * ubatch) const;
+    bool should_use_interleaved() const;
+    const gptoss_kv_view * ensure_interleaved(int32_t il, uint32_t n_kv, const gptoss_kv_cache::slot_info & sinfo) const;
 
 private:
     gptoss_memory_status status;
@@ -353,6 +360,10 @@ private:
     bool do_shift = false;
 
     stream_copy_info sc_info;
+
+    mutable bool interleave_checked = false;
+    mutable bool interleave_enabled = false;
+    mutable std::unordered_map<int32_t, gptoss_kv_view> interleaved_views;
 
     //
     // batch processing context

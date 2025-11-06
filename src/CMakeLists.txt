@@ -17,6 +17,7 @@ add_library(gptoss
             gptoss-cparams.cpp
             gptoss-grammar.cpp
             gptoss-graph.cpp
+            gptoss-kv-layout.cpp
             gptoss-hparams.cpp
             gptoss-impl.cpp
             gptoss-io.cpp

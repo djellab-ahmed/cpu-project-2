@@ -2221,6 +2221,16 @@ extern "C" {
 
 #define GGML_KQ_MASK_PAD 64
 
+    // New: extended builder that carries tile size (tokens) in op_params
+    GGML_API struct ggml_tensor * ggml_flash_attn_decode_ex(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            float                 scale,
+            int32_t               tile_tok);
+
+    // Backwards-compatible builder (tile_tok=0 -> kernel chooses default / env)
     GGML_API struct ggml_tensor * ggml_flash_attn_decode(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,
