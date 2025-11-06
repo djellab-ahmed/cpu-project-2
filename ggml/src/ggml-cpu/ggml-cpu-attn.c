@@ -1,6 +1,8 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
+#include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
+#include "ops.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -8,12 +10,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#if defined(__clang__) || defined(__GNUC__)
-#define GGML_RESTRICT __restrict__
-#else
-#define GGML_RESTRICT
-#endif
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define GGML_TLS _Thread_local
@@ -44,9 +40,13 @@ static GGML_TLS float * tls_v_buf = NULL;
 static GGML_TLS size_t  tls_v_cap = 0;
 
 #ifndef GGML_ALIGNED_FREE_TAKES_SIZE
-#define GGML_FREE_ALIGNED(p, sz) ggml_aligned_free((p))
-#else
+#define GGML_ALIGNED_FREE_TAKES_SIZE 1
+#endif
+
+#if GGML_ALIGNED_FREE_TAKES_SIZE
 #define GGML_FREE_ALIGNED(p, sz) ggml_aligned_free((p), (sz))
+#else
+#define GGML_FREE_ALIGNED(p, sz) do { (void) (sz); ggml_aligned_free((p)); } while (0)
 #endif
 
 static void ensure_tls_buffer(float ** ptr, size_t * cap, size_t need) {
