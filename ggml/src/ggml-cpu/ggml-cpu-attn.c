@@ -183,9 +183,19 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         return;
     }
 
-    ensure_tls_buffer(&tls_q_buf, &tls_q_cap, (size_t) head_dim);
-    ensure_tls_buffer(&tls_k_buf, &tls_k_cap, (size_t) head_dim);
-    ensure_tls_buffer(&tls_v_buf, &tls_v_cap, (size_t) head_dim);
+    const bool need_q_tmp = q_type != GGML_TYPE_F32;
+    const bool need_k_tmp = k_type != GGML_TYPE_F32;
+    const bool need_v_tmp = v_type != GGML_TYPE_F32;
+
+    if (need_q_tmp) {
+        ensure_tls_buffer(&tls_q_buf, &tls_q_cap, (size_t) head_dim);
+    }
+    if (need_k_tmp) {
+        ensure_tls_buffer(&tls_k_buf, &tls_k_cap, (size_t) head_dim);
+    }
+    if (need_v_tmp) {
+        ensure_tls_buffer(&tls_v_buf, &tls_v_cap, (size_t) head_dim);
+    }
 
     int tile_tok = 256;
     const char * tile_env = getenv("GPTOSS_FLASH_TILE");
@@ -194,6 +204,14 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         if (tmp >= 32 && tmp <= 2048) {
             tile_tok = tmp;
         }
+    }
+
+    const char * flash_dbg = getenv("GPTOSS_FLASH_DEBUG");
+    if (flash_dbg != NULL && flash_dbg[0] != '\0' && params->ith == 0) {
+        fprintf(stderr, "[flash-decode] hd=%lld kv=%lld tile=%d\n",
+                (long long) head_dim,
+                (long long) n_kv,
+                tile_tok);
     }
 
     const int64_t head_ratio = n_head / n_head_kv;
@@ -207,15 +225,19 @@ void ggml_compute_forward_flash_attn_decode_cpu(
 
         const int64_t kv_head = head / head_ratio;
 
-        const char * q_ptr = (const char *) q->data
-                           + head * q_nb1 + batch * q_nb2 + stream * q_nb3;
-        load_row_to_f32(q_ptr, q_type, tls_q_buf, head_dim);
+        const char * q_ptr_raw = (const char *) q->data
+                                 + head * q_nb1 + batch * q_nb2 + stream * q_nb3;
+        const float * q_vec = NULL;
+        if (q_type == GGML_TYPE_F32) {
+            q_vec = (const float *) q_ptr_raw;
+        } else {
+            load_row_to_f32(q_ptr_raw, q_type, tls_q_buf, head_dim);
+            q_vec = tls_q_buf;
+        }
 
         float * y_ptr = (float *) ((char *) dst->data
                          + head * y_nb1 + batch * y_nb2 + stream * y_nb3);
-        for (int64_t i = 0; i < head_dim; ++i) {
-            y_ptr[i] = 0.0f;
-        }
+        memset(y_ptr, 0, (size_t) head_dim * sizeof(float));
 
         float m = -INFINITY;
         float l = 0.0f;
@@ -237,19 +259,31 @@ void ggml_compute_forward_flash_attn_decode_cpu(
             for (int64_t ti = 0; ti < tile_n; ++ti) {
                 const int64_t t = t0 + ti;
 
-                const char * k_ptr = (const char *) k->data
-                                   + kv_head * k_nb1 + t * k_nb2 + stream * k_nb3;
-                load_row_to_f32(k_ptr, k_type, tls_k_buf, head_dim);
+                const char * k_ptr_raw = (const char *) k->data
+                                         + kv_head * k_nb1 + t * k_nb2 + stream * k_nb3;
+                const float * k_vec = NULL;
+                if (k_type == GGML_TYPE_F32) {
+                    k_vec = (const float *) k_ptr_raw;
+                } else {
+                    load_row_to_f32(k_ptr_raw, k_type, tls_k_buf, head_dim);
+                    k_vec = tls_k_buf;
+                }
 
-                float s = dot_q_k_f32(tls_q_buf, tls_k_buf, head_dim) * scale;
+                float s = dot_q_k_f32(q_vec, k_vec, head_dim) * scale;
 
                 const float m_new = fmaxf(m, s);
                 const float alpha = isfinite(m) ? expf(m - m_new) : 0.0f;
                 const float beta  = expf(s - m_new);
 
-                const char * v_ptr = (const char *) v->data
-                                   + kv_head * v_nb1 + t * v_nb2 + stream * v_nb3;
-                load_row_to_f32(v_ptr, v_type, tls_v_buf, head_dim);
+                const char * v_ptr_raw = (const char *) v->data
+                                         + kv_head * v_nb1 + t * v_nb2 + stream * v_nb3;
+                const float * v_vec = NULL;
+                if (v_type == GGML_TYPE_F32) {
+                    v_vec = (const float *) v_ptr_raw;
+                } else {
+                    load_row_to_f32(v_ptr_raw, v_type, tls_v_buf, head_dim);
+                    v_vec = tls_v_buf;
+                }
                 
 #if defined(__AVX2__)
                 {
@@ -258,7 +292,7 @@ void ggml_compute_forward_flash_attn_decode_cpu(
                     int64_t i = 0;
                     for (; i + 8 <= head_dim; i += 8) {
                         __m256 u  = _mm256_loadu_ps(y_ptr + i);
-                        __m256 vv = _mm256_loadu_ps(tls_v_buf + i);
+                        __m256 vv = _mm256_loadu_ps(v_vec + i);
 #if defined(__FMA__)
                         u = _mm256_fmadd_ps(vb, vv, _mm256_mul_ps(va, u));
 #else
@@ -267,12 +301,12 @@ void ggml_compute_forward_flash_attn_decode_cpu(
                         _mm256_storeu_ps(y_ptr + i, u);
                     }
                     for (; i < head_dim; ++i) {
-                        y_ptr[i] = alpha * y_ptr[i] + beta * tls_v_buf[i];
+                        y_ptr[i] = alpha * y_ptr[i] + beta * v_vec[i];
                     }
                 }
 #else
                 for (int64_t i = 0; i < head_dim; ++i) {
-                    y_ptr[i] = alpha * y_ptr[i] + beta * tls_v_buf[i];
+                    y_ptr[i] = alpha * y_ptr[i] + beta * v_vec[i];
                 }
 #endif
 
