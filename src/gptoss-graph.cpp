@@ -12,6 +12,20 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
+
+namespace {
+
+bool flash_decode_runtime_enabled() {
+    static int cached = -1;
+    if (cached == -1) {
+        const char * env = std::getenv("GPTOSS_FLASH_DECODE");
+        cached = (env == nullptr) ? 1 : (std::atoi(env) != 0);
+    }
+    return cached != 0;
+}
+
+}
 
 void llm_graph_input_embd::set_input(const gptoss_ubatch * ubatch) {
     if (ubatch->token) {
@@ -1356,30 +1370,39 @@ ggml_tensor * llm_graph_context::build_attn_mha(
     k = ggml_permute(ctx0, k, 0, 2, 1, 3);
     v = ggml_permute(ctx0, v, 0, 2, 1, 3);
 
-    ggml_tensor * cur;
+    ggml_tensor * cur = nullptr;
 
     if (cparams.flash_attn && kq_b == nullptr) {
         GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
 
+        ggml_tensor * k_use = k;
+        ggml_tensor * v_use = v;
+
         if (v_trans) {
-            v = ggml_transpose(ctx0, v);
+            v_use = ggml_transpose(ctx0, v_use);
         }
 
-        // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
-        if (k->type == GGML_TYPE_F32) {
-            k = ggml_cast(ctx0, k, GGML_TYPE_F16);
+        if (k_use->type == GGML_TYPE_F32) {
+            k_use = ggml_cast(ctx0, k_use, GGML_TYPE_F16);
+        }
+        if (v_use->type == GGML_TYPE_F32) {
+            v_use = ggml_cast(ctx0, v_use, GGML_TYPE_F16);
         }
 
-        if (v->type == GGML_TYPE_F32) {
-            v = ggml_cast(ctx0, v, GGML_TYPE_F16);
+        const bool decode_single_token = ubatch.n_seq_tokens == 1 && ubatch.n_seqs == 1 && q->ne[2] == 1;
+        const bool use_flash_decode = flash_decode_runtime_enabled() && decode_single_token && sinks == nullptr;
+
+        if (use_flash_decode) {
+            cur = ggml_flash_attn_decode(ctx0, q, k_use, v_use, kq_scale);
+            cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
+        } else {
+            cur = ggml_flash_attn_ext(ctx0, q, k_use, v_use, kq_mask, kq_scale, hparams.f_max_alibi_bias,
+                                      hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+            cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
+
+            ggml_flash_attn_ext_add_sinks(cur, sinks);
+            ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
         }
-
-        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
-                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
-
-        ggml_flash_attn_ext_add_sinks(cur, sinks);
-        ggml_flash_attn_ext_set_prec (cur, GGML_PREC_F32);
 
         if (v_mla) {
 #if 0

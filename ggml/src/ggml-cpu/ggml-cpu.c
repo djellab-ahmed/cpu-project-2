@@ -2393,6 +2393,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_leaky_relu(params, tensor);
             } break;
+        case GGML_OP_FLASH_ATTN_DECODE:
+            {
+                ggml_compute_forward_flash_attn_decode_cpu(params, tensor);
+            } break;
         case GGML_OP_FLASH_ATTN_EXT:
             {
                 ggml_compute_forward_flash_attn_ext(params, tensor);
@@ -2739,6 +2743,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_ARANGE:
         case GGML_OP_TIMESTEP_EMBEDDING:
         case GGML_OP_ARGSORT:
+        case GGML_OP_FLASH_ATTN_DECODE:
         case GGML_OP_FLASH_ATTN_EXT:
         case GGML_OP_FLASH_ATTN_BACK:
         case GGML_OP_SSM_CONV:
@@ -3261,6 +3266,10 @@ struct ggml_cplan ggml_graph_plan(
 
                         cur += sizeof(ggml_fp16_t)*ne00*ne01*ne02*ne03;
                         cur += sizeof(ggml_fp16_t)*ne10*ne11*ne12;
+                    } break;
+                case GGML_OP_FLASH_ATTN_DECODE:
+                    {
+                        cur = 0;
                     } break;
                 case GGML_OP_FLASH_ATTN_EXT:
                     {
