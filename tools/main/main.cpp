@@ -61,6 +61,8 @@ struct options {
     float       repeat_penalty = 1.1f;
     int32_t     repeat_last_n  = 64;
     bool        measure_tps    = false;
+    bool        quiet_mode     = false;
+    bool        bench_mode     = false;
 };
 
 void print_usage(const char * program) {
@@ -71,6 +73,7 @@ void print_usage(const char * program) {
               << "  -p, --prompt TEXT        Text prompt to evaluate\n"
               << "  -n, --n-predict N        Number of tokens to generate (default unlimited; set -1 for EOS-driven)\n"
               << "      --measure-tps        Run the 10 standard prompts and report True TPS statistics\n"
+              << "      --bench             Emit BENCH timing CSV for the provided prompt\n"
               << "  -t, --threads N          Threads for token generation\n"
               << "  -tb, --threads-batch N   Threads for prompt ingestion\n"
               << "      --ctx-size N         Override context window\n"
@@ -83,6 +86,7 @@ void print_usage(const char * program) {
               << "      --top-k N            Top-k limit (default 40, 0 = unlimited)\n"
               << "      --repeat-penalty R   Repetition penalty (default 1.1)\n"
               << "      --repeat-last-n N    Window for repetition penalty (default 64)\n"
+              << "      --quiet              Suppress streamed token output\n"
               << "  -h, --help              Show this help message\n";
 }
 
@@ -258,6 +262,10 @@ bool parse_arguments(int argc, char ** argv, options & opts) {
             }
         } else if (arg == "--measure-tps") {
             opts.measure_tps = true;
+        } else if (arg == "--quiet") {
+            opts.quiet_mode = true;
+        } else if (arg == "--bench") {
+            opts.bench_mode = true;
         } else {
             std::cerr << "Unrecognized argument: " << arg << "\n";
             print_usage(argv[0]);
@@ -370,6 +378,8 @@ std::string token_to_string(const gptoss_vocab * vocab, gptoss_token token) {
 struct generation_metrics {
     size_t generated_tokens = 0;
     double elapsed_seconds  = 0.0;
+    double prefill_ms       = 0.0;
+    double decode_ms        = 0.0;
 };
 
 bool run_generation(const options & opts, gptoss_model * model, const std::string & prompt, bool stream_tokens, generation_metrics & metrics) {
@@ -428,6 +438,7 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     }
 
     auto start_time = std::chrono::steady_clock::now();
+    auto prefill_start = start_time;
 
     while (processed < prompt_tokens.size()) {
         const uint32_t n_eval = std::min<uint32_t>(batch_tokens, static_cast<uint32_t>(prompt_tokens.size() - processed));
@@ -440,6 +451,9 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
         }
         processed += n_eval;
     }
+
+    auto prefill_end = std::chrono::steady_clock::now();
+    metrics.prefill_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(prefill_end - prefill_start).count();
 
     const int32_t vocab_size = gptoss_vocab_n_tokens(vocab);
 
@@ -458,6 +472,8 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     candidates.reserve(static_cast<size_t>(vocab_size));
 
     size_t generated_tokens = 0;
+
+    auto decode_start = prefill_end;
 
     while (remaining-- > 0) {
         float * logits_raw = gptoss_get_logits(ctx);
@@ -596,6 +612,7 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
 
     metrics.generated_tokens = generated_tokens;
     metrics.elapsed_seconds = std::chrono::duration_cast<std::chrono::duration<double>>(end_time - start_time).count();
+    metrics.decode_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end_time - decode_start).count();
 
     gptoss_free(ctx);
     return true;
@@ -726,8 +743,17 @@ int main(int argc, char ** argv) {
         }
     } else {
         generation_metrics metrics;
-        if (!run_generation(opts, model, opts.prompt, /*stream_tokens=*/true, metrics)) {
+        const bool stream_tokens = !opts.quiet_mode && !opts.bench_mode;
+        if (!run_generation(opts, model, opts.prompt, stream_tokens, metrics)) {
             exit_code = 1;
+        } else if (opts.bench_mode) {
+            std::ostringstream bench_line;
+            bench_line.setf(std::ios::fixed, std::ios::floatfield);
+            bench_line << std::setprecision(3)
+                       << "BENCH,P_MS=" << metrics.prefill_ms
+                       << ",D_MS=" << metrics.decode_ms
+                       << ",TOK=" << metrics.generated_tokens;
+            std::cout << bench_line.str() << std::endl;
         }
     }
 
