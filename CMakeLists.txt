@@ -5,6 +5,8 @@ include(CheckIncludeFileCXX)
 #set(CMAKE_WARN_DEPRECATED YES)
 set(CMAKE_WARN_UNUSED_CLI YES)
 
+add_compile_definitions(GGML_VEC_DOT_Q4KQ8K_STRIDED=1)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
@@ -23,6 +25,34 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
         $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno>
         $<$<COMPILE_LANGUAGE:CXX>:-fno-trapping-math>
     )
+
+    if (NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        include(CheckCCompilerFlag)
+        include(CheckCXXCompilerFlag)
+
+        check_c_compiler_flag("-mavx2" GPTOSS_C_HAS_AVX2)
+        check_cxx_compiler_flag("-mavx2" GPTOSS_CXX_HAS_AVX2)
+        check_c_compiler_flag("-mfma" GPTOSS_C_HAS_FMA)
+        check_cxx_compiler_flag("-mfma" GPTOSS_CXX_HAS_FMA)
+
+        if (GPTOSS_C_HAS_AVX2 AND GPTOSS_CXX_HAS_AVX2)
+            add_compile_options(
+                $<$<COMPILE_LANGUAGE:C>:-mavx2>
+                $<$<COMPILE_LANGUAGE:CXX>:-mavx2>
+            )
+        endif()
+
+        if (GPTOSS_C_HAS_FMA AND GPTOSS_CXX_HAS_FMA)
+            add_compile_options(
+                $<$<COMPILE_LANGUAGE:C>:-mfma>
+                $<$<COMPILE_LANGUAGE:CXX>:-mfma>
+            )
+        endif()
+
+        if (GPTOSS_C_HAS_AVX2 AND GPTOSS_CXX_HAS_AVX2 AND GPTOSS_C_HAS_FMA AND GPTOSS_CXX_HAS_FMA)
+            add_compile_definitions(GGML_HAVE_AVX2)
+        endif()
+    endif()
 endif()
 
 # Add path to modules
