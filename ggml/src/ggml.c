@@ -993,6 +993,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "FLASH_ATTN_EXT",
     "FLASH_ATTN_BACK",
+    "FLASH_ATTN_DECODE",
     "SSM_CONV",
     "SSM_SCAN",
     "WIN_PART",
@@ -1097,6 +1098,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "flash_attn_ext(x)",
     "flash_attn_back(x)",
+    "flash_attn_decode(x)",
     "ssm_conv(x)",
     "ssm_scan(x)",
     "win_part(x)",
@@ -5061,6 +5063,41 @@ struct ggml_tensor * ggml_top_k(
                 0);
 
     return result;
+}
+
+// ggml_flash_attn_decode
+
+struct ggml_tensor * ggml_flash_attn_decode(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        float                 scale) {
+    GGML_ASSERT(q->ne[0] > 0);
+    GGML_ASSERT(q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16 || q->type == GGML_TYPE_BF16);
+    GGML_ASSERT(k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_BF16);
+    GGML_ASSERT(v->type == GGML_TYPE_F32 || v->type == GGML_TYPE_F16 || v->type == GGML_TYPE_BF16);
+
+    const int n_dims = ggml_n_dims(q);
+    GGML_ASSERT(n_dims <= GGML_MAX_DIMS);
+
+    int64_t ne[GGML_MAX_DIMS] = { 1, 1, 1, 1 };
+    for (int i = 0; i < n_dims; ++i) {
+        ne[i] = q->ne[i];
+    }
+
+    struct ggml_tensor * out = ggml_new_tensor(ctx, GGML_TYPE_F32, n_dims, ne);
+    GGML_ASSERT(q->ne[1] == 1 && "flash_attn_decode: n_batch must be 1");
+
+    out->op     = GGML_OP_FLASH_ATTN_DECODE;
+    out->src[0] = q;
+    out->src[1] = k;
+    out->src[2] = v;
+
+    memset(out->op_params, 0, sizeof(out->op_params));
+    memcpy(&out->op_params[0], &scale, sizeof(float));
+
+    return out;
 }
 
 // ggml_flash_attn_ext
