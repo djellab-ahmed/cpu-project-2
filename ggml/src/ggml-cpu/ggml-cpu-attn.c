@@ -44,6 +44,11 @@ static inline bool ggml_env_flag(const char * name) {
     return val != NULL && val[0] != '\0' && val[0] != '0';
 }
 
+static inline int flash_dbg(void) {
+    const char * env = getenv("GPTOSS_FLASH_DEBUG");
+    return env != NULL && env[0] != '\0' && env[0] != '0';
+}
+
 #ifndef GGML_ALIGNED_FREE_TAKES_SIZE
 #define GGML_ALIGNED_FREE_TAKES_SIZE 1
 #endif
@@ -211,14 +216,10 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         }
     }
 
-    if (params->ith == 0 && ggml_env_flag("GPTOSS_FLASH_DEBUG")) {
-        static bool printed = false;
-        if (!printed) {
-            printed = true;
-            fprintf(stderr, "[flash-decode] hd=%lld kv=%lld tile=%d\n",
-                    (long long) head_dim,
-                    (long long) n_kv,
-                    tile_tok);
+    if (params->ith == 0 && flash_dbg()) {
+        static int once;
+        if (!once++) {
+            fprintf(stderr, "[flash-decode] online-softmax fastpath enabled (tile=%d)\n", tile_tok);
         }
     }
 

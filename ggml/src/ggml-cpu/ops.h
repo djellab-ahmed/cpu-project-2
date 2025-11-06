@@ -112,15 +112,18 @@ void ggml_compute_forward_opt_step_adamw(const struct ggml_compute_params * para
 void ggml_compute_forward_mul_mat(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_opt_step_sgd(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 
+#ifdef __AVX2__
 // n=1 decode-specialized GEMV (AVX2)
 void ggml_mul_mat_q4k_decode_avx2(const struct ggml_compute_params * params,
                                   struct ggml_tensor * dst,
-                                  const struct ggml_tensor * src0,
-                                  const struct ggml_tensor * src1);
+                                  struct ggml_tensor * w,
+                                  struct ggml_tensor * x);
+
 void ggml_mul_mat_mxfp4_decode_avx2(const struct ggml_compute_params * params,
                                     struct ggml_tensor * dst,
-                                    const struct ggml_tensor * src0,
-                                    const struct ggml_tensor * src1);
+                                    struct ggml_tensor * w,
+                                    struct ggml_tensor * x);
+#endif
 #ifdef __cplusplus
 }
 #endif
