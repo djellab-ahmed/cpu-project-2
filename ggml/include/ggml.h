@@ -532,6 +532,7 @@ extern "C" {
 
         GGML_OP_FLASH_ATTN_EXT,
         GGML_OP_FLASH_ATTN_BACK,
+        GGML_OP_FLASH_ATTN_DECODE,
         GGML_OP_SSM_CONV,
         GGML_OP_SSM_SCAN,
         GGML_OP_WIN_PART,
@@ -2219,6 +2220,13 @@ extern "C" {
             int                   k);
 
 #define GGML_KQ_MASK_PAD 64
+
+    GGML_API struct ggml_tensor * ggml_flash_attn_decode(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            float                 scale);
 
     // q:    [n_embd_k, n_batch,     n_head,    ne3 ]
     // k:    [n_embd_k, n_kv,        n_head_kv, ne3 ]
