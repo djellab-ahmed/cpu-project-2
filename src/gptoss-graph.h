@@ -15,6 +15,7 @@ struct ggml_cgraph;
 struct ggml_context;
 struct ggml_tensor;
 
+struct gptoss_context;
 struct gptoss_cparams;
 
 struct gptoss_memory_context_i;
@@ -23,6 +24,8 @@ class gptoss_kv_cache_context;
 class gptoss_kv_cache_iswa_context;
 class gptoss_memory_recurrent_context;
 class gptoss_memory_hybrid_context;
+
+ggml_cgraph * build_decode_graph(gptoss_context * ctx, ggml_cgraph * current);
 
 // certain models (typically multi-modal) can produce different types of graphs
 enum llm_graph_type {

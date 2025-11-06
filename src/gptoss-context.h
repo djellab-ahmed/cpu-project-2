@@ -270,6 +270,11 @@ private:
     ggml_backend_t backend_cpu = nullptr;
     std::vector<ggml_backend_ptr> backends;
 
+    void *        scratch_ptr  = nullptr;
+    size_t        scratch_sz   = 0;
+    ggml_cgraph * decode_graph = nullptr;
+    struct ggml_cplan * decode_plan = nullptr;
+
     // training
     ggml_opt_context_t opt_ctx = nullptr;
 
@@ -309,4 +314,6 @@ private:
     mutable int32_t n_eval   = 0; // number of eval calls
 
     mutable int32_t n_reused = 0; // number of times the previous graph was reused
+
+    friend ggml_cgraph * build_decode_graph(gptoss_context * ctx, ggml_cgraph * current);
 };
