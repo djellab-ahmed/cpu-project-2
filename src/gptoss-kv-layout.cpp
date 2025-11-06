@@ -246,6 +246,16 @@ void gptoss_kv_store(gptoss_kv_view &view,
     if (token_idx + 1 > view.used_tokens) {
         view.used_tokens = token_idx + 1;
     }
+
+    if (env_flag("GPTOSS_KV_DEBUG", false)) {
+        fprintf(stderr,
+                "[kv-layout] store stream=%lld token=%lld head=%lld dst=%p block=%zu\n",
+                (long long) stream_idx,
+                (long long) token_idx,
+                (long long) head_idx,
+                dst,
+                block_bytes);
+    }
 }
 
 struct ggml_tensor * gptoss_make_k_view(struct ggml_context *ctx,
@@ -254,14 +264,35 @@ struct ggml_tensor * gptoss_make_k_view(struct ggml_context *ctx,
                                         int64_t n_stream) {
     int64_t ne[4] = { view.head_dim, view.n_head_kv, n_kv, n_stream };
     struct ggml_tensor *t = ggml_new_tensor(ctx, view.dtype, 4, ne);
-    t->data = static_cast<uint8_t *>(view.base);
     t->nb[0] = (int64_t) view.elem;
     t->nb[1] = (int64_t) view.stride_head_bytes;
     t->nb[2] = (int64_t) view.stride_token_bytes;
     t->nb[3] = (int64_t) view.stride_stream_bytes;
+
+    void *addr = static_cast<uint8_t *>(view.base);
     if (view.buffer) {
-        GGML_ASSERT(ggml_backend_tensor_alloc(view.buffer, t, t->data) == GGML_STATUS_SUCCESS);
+        enum ggml_status st = ggml_backend_tensor_alloc(view.buffer, t, addr);
+        if (st != GGML_STATUS_SUCCESS) {
+            fprintf(stderr, "[kv-layout] ggml_backend_tensor_alloc(K) failed: %d addr=%p\n", (int) st, addr);
+            GGML_ABORT("ggml_backend_tensor_alloc failure for K view");
+        }
+    } else {
+        t->data = addr;
     }
+
+    if (env_flag("GPTOSS_KV_DEBUG", false)) {
+        fprintf(stderr,
+                "[kv-layout] K view n=%lld heads=%lld streams=%lld base=%p nb={%lld,%lld,%lld,%lld}\n",
+                (long long) n_kv,
+                (long long) view.n_head_kv,
+                (long long) n_stream,
+                t->data,
+                (long long) t->nb[0],
+                (long long) t->nb[1],
+                (long long) t->nb[2],
+                (long long) t->nb[3]);
+    }
+
     return t;
 }
 
@@ -272,13 +303,34 @@ struct ggml_tensor * gptoss_make_v_view(struct ggml_context *ctx,
     int64_t ne[4] = { view.head_dim, view.n_head_kv, n_kv, n_stream };
     struct ggml_tensor *t = ggml_new_tensor(ctx, view.dtype, 4, ne);
     const size_t block_bytes = (size_t) view.head_dim * view.elem;
-    t->data = static_cast<uint8_t *>(view.base) + block_bytes;
     t->nb[0] = (int64_t) view.elem;
     t->nb[1] = (int64_t) view.stride_head_bytes;
     t->nb[2] = (int64_t) view.stride_token_bytes;
     t->nb[3] = (int64_t) view.stride_stream_bytes;
+
+    void *addr = static_cast<uint8_t *>(view.base) + block_bytes;
     if (view.buffer) {
-        GGML_ASSERT(ggml_backend_tensor_alloc(view.buffer, t, t->data) == GGML_STATUS_SUCCESS);
+        enum ggml_status st = ggml_backend_tensor_alloc(view.buffer, t, addr);
+        if (st != GGML_STATUS_SUCCESS) {
+            fprintf(stderr, "[kv-layout] ggml_backend_tensor_alloc(V) failed: %d addr=%p\n", (int) st, addr);
+            GGML_ABORT("ggml_backend_tensor_alloc failure for V view");
+        }
+    } else {
+        t->data = addr;
     }
+
+    if (env_flag("GPTOSS_KV_DEBUG", false)) {
+        fprintf(stderr,
+                "[kv-layout] V view n=%lld heads=%lld streams=%lld base=%p nb={%lld,%lld,%lld,%lld}\n",
+                (long long) n_kv,
+                (long long) view.n_head_kv,
+                (long long) n_stream,
+                t->data,
+                (long long) t->nb[0],
+                (long long) t->nb[1],
+                (long long) t->nb[2],
+                (long long) t->nb[3]);
+    }
+
     return t;
 }
