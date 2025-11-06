@@ -1018,6 +1018,69 @@ ggml_tensor * gptoss_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_
             ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
 }
 
+
+bool gptoss_kv_cache::build_interleaved_view(int32_t il, uint32_t n_kv, const slot_info & sinfo, gptoss_kv_view &view) const {
+    if (!gptoss_kv_interleave_enabled()) {
+        return false;
+    }
+    if (v_trans) {
+        return false;
+    }
+    const int32_t ikv = map_layer_ids.at(il);
+    const auto &layer = layers[ikv];
+    ggml_tensor *k_tensor = layer.k;
+    ggml_tensor *v_tensor = layer.v;
+    if (k_tensor->type != v_tensor->type) {
+        return false;
+    }
+    const int64_t head_dim_k = hparams.n_embd_head_k;
+    const int64_t head_dim_v = hparams.n_embd_head_v;
+    if (head_dim_k != head_dim_v) {
+        return false;
+    }
+    const int32_t n_head = hparams.n_head_kv(il);
+    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+    const int64_t cap_tokens = get_size();
+
+    const size_t elem = ggml_type_size(k_tensor->type);
+    if (view.base == nullptr || view.elem != elem || view.head_dim != head_dim_k ||
+        view.n_head_kv != n_head || view.n_stream != (int64_t) ns || view.cap_tokens < cap_tokens) {
+        if (!gptoss_kv_alloc(view, k_tensor->type, head_dim_k, n_head, cap_tokens, ns,
+                              gptoss_kv_prefer_hugepages(), gptoss_kv_default_tile(head_dim_k), gptoss_kv_pad_tokens())) {
+            return false;
+        }
+    }
+
+    view.used_tokens = 0;
+
+    const uint32_t tokens_to_copy = std::min<uint32_t>(n_kv, (uint32_t) view.cap_tokens);
+    for (uint32_t s = 0; s < ns; ++s) {
+        uint32_t stream_id = (sinfo.strm.size() == ns) ? sinfo.strm[s] : (sinfo.s0 + s);
+        if (stream_id >= layer.k_stream.size() || stream_id >= layer.v_stream.size()) {
+            return false;
+        }
+        const ggml_tensor *k_view = layer.k_stream[stream_id];
+        const ggml_tensor *v_view = layer.v_stream[stream_id];
+        const char *k_base = static_cast<const char *>(k_view->data);
+        const char *v_base = static_cast<const char *>(v_view->data);
+        const size_t k_stride = k_view->nb[1];
+        const size_t v_stride = v_view->nb[1];
+
+        for (uint32_t token = 0; token < tokens_to_copy; ++token) {
+            const char *k_token_ptr = k_base + token * k_stride;
+            const char *v_token_ptr = v_base + token * v_stride;
+            for (int head = 0; head < n_head; ++head) {
+                const char *k_head_ptr = k_token_ptr + (size_t) head * head_dim_k * elem;
+                const char *v_head_ptr = v_token_ptr + (size_t) head * head_dim_k * elem;
+                gptoss_kv_store(view, s, token, head, k_head_ptr, v_head_ptr);
+            }
+        }
+    }
+
+    view.used_tokens = tokens_to_copy;
+    return true;
+}
+
 ggml_tensor * gptoss_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {
     GGML_UNUSED(sinfo);
 
@@ -1925,7 +1988,39 @@ gptoss_kv_cache_context::gptoss_kv_cache_context(
         std::vector<gptoss_ubatch> ubatches) : status(GPTOSS_MEMORY_STATUS_SUCCESS), kv(kv), sinfos(std::move(sinfos)), ubatches(std::move(ubatches)) {
 }
 
-gptoss_kv_cache_context::~gptoss_kv_cache_context() = default;
+gptoss_kv_cache_context::~gptoss_kv_cache_context() {
+    for (auto &entry : interleaved_views) {
+        gptoss_kv_free(entry.second);
+    }
+}
+
+bool gptoss_kv_cache_context::should_use_interleaved() const {
+    if (!interleave_checked) {
+        interleave_enabled = gptoss_kv_interleave_enabled();
+        interleave_checked = true;
+        if (!kv) {
+            interleave_enabled = false;
+        }
+    }
+    return interleave_enabled;
+}
+
+const gptoss_kv_view * gptoss_kv_cache_context::ensure_interleaved(int32_t il, uint32_t n_kv, const gptoss_kv_cache::slot_info & sinfo) const {
+    if (!should_use_interleaved()) {
+        return nullptr;
+    }
+    auto &view = interleaved_views[il];
+    if (!kv->build_interleaved_view(il, n_kv, sinfo, view)) {
+        interleave_enabled = false;
+        gptoss_kv_free(view);
+        interleaved_views.erase(il);
+        return nullptr;
+    }
+    const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+    view.n_stream = ns;
+    gptoss_kv_debug_once(view, "views");
+    return &view;
+}
 
 bool gptoss_kv_cache_context::next() {
     assert(status == GPTOSS_MEMORY_STATUS_SUCCESS);
@@ -1968,11 +2063,21 @@ uint32_t gptoss_kv_cache_context::get_n_kv() const {
 }
 
 ggml_tensor * gptoss_kv_cache_context::get_k(ggml_context * ctx, int32_t il) const {
-    return kv->get_k(ctx, il, n_kv, sinfos[i_cur]);
+    const auto & sinfo = sinfos[i_cur];
+    if (const auto * view = ensure_interleaved(il, n_kv, sinfo)) {
+        const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+        return gptoss_make_k_view(ctx, *view, n_kv, ns);
+    }
+    return kv->get_k(ctx, il, n_kv, sinfo);
 }
 
 ggml_tensor * gptoss_kv_cache_context::get_v(ggml_context * ctx, int32_t il) const {
-    return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
+    const auto & sinfo = sinfos[i_cur];
+    if (const auto * view = ensure_interleaved(il, n_kv, sinfo)) {
+        const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+        return gptoss_make_v_view(ctx, *view, n_kv, ns);
+    }
+    return kv->get_v(ctx, il, n_kv, sinfo);
 }
 
 ggml_tensor * gptoss_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {

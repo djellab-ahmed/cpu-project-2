@@ -209,7 +209,7 @@ void ggml_compute_forward_flash_attn_decode_cpu(
 
     // Tile selection precedence: env > op_params (graph) > default
     int tile_tok = 0;
-    memcpy(&tile_tok, &dst->op_params[4], sizeof(int));
+    memcpy(&tile_tok, &dst->op_params[sizeof(float)], sizeof(int));
     if (tile_tok < 32 || tile_tok > 2048) {
         tile_tok = 256;
     }
@@ -267,8 +267,8 @@ void ggml_compute_forward_flash_attn_decode_cpu(
                                      + kv_head * k_nb1 + (t0 + tile_n) * k_nb2 + stream * k_nb3;
                 const char * v_next = (const char *) v->data
                                      + kv_head * v_nb1 + (t0 + tile_n) * v_nb2 + stream * v_nb3;
-                _mm_prefetch(k_next, _MM_HINT_T0);
-                _mm_prefetch(v_next, _MM_HINT_T0);
+                _mm_prefetch(k_next + 256, _MM_HINT_T0);
+                _mm_prefetch(v_next + 256, _MM_HINT_T0);
             }
 #endif
 

@@ -1400,7 +1400,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             && decode_single_token && causal_only && !has_mask && no_sinks;
 
         if (use_flash_decode) {
-            const int tile_tok = gptoss_kv_default_tile_pad();
+            const int tile_tok = gptoss_kv_default_tile(q->ne[0]);
             cur = ggml_flash_attn_decode_ex(ctx0, q, k_use, v_use, kq_scale, tile_tok);
             cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
         } else {
