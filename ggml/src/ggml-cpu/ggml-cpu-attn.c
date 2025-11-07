@@ -20,6 +20,13 @@
 #define GGML_TLS __thread
 #endif
 
+#if defined(__AVX2__) && defined(__FMA__)
+void flash_decode_q8_rowrow_avx2(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst,
+        const struct gptoss_kv_view * kv_view);
+#endif
+
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
@@ -133,7 +140,7 @@ static inline size_t kv_token_head_offset(const struct gptoss_kv_view * view, in
     return off;
 }
 
-static void ggml_compute_forward_flash_attn_decode_cpu_q8_rowrow_scalar(
+static void flash_decode_q8_rowrow_scalar(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
         const struct gptoss_kv_view * kv_view) {
@@ -509,7 +516,11 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         kv_dtype == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_k == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_v == GPTOSS_KV_Q8_ROWROW) {
-        ggml_compute_forward_flash_attn_decode_cpu_q8_rowrow_scalar(params, dst, kv_view);
+#if defined(__AVX2__) && defined(__FMA__)
+        flash_decode_q8_rowrow_avx2(params, dst, kv_view);
+        return;
+#endif
+        flash_decode_q8_rowrow_scalar(params, dst, kv_view);
         return;
     }
 

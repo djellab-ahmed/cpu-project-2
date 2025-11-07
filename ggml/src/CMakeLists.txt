@@ -3,6 +3,15 @@ include("../cmake/common.cmake")
 
 add_compile_definitions(GGML_SCHED_MAX_COPIES=${GGML_SCHED_MAX_COPIES})
 
+# AVX2 flash decode kernels for KV Q8 cache
+if(GPTOSS_KV_Q8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  add_library(ggml-cpu-attn-q8-avx2 OBJECT ggml-cpu-attn-q8-avx2.c)
+  target_compile_options(ggml-cpu-attn-q8-avx2 PRIVATE -mavx2 -mfma)
+  target_compile_definitions(ggml-cpu-attn-q8-avx2 PRIVATE __AVX2__ __FMA__)
+  target_include_directories(ggml-cpu-attn-q8-avx2 PRIVATE . ../include ggml-cpu)
+  set_target_properties(ggml-cpu-attn-q8-avx2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # enable libstdc++ assertions for debug builds
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     add_compile_definitions($<$<CONFIG:Debug>:_GLIBCXX_ASSERTIONS>)
