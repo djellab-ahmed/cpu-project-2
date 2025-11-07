@@ -508,6 +508,7 @@ extern "C" {
         GGML_OP_SOFT_MAX,
         GGML_OP_SOFT_MAX_BACK,
         GGML_OP_ROPE,
+        GGML_OP_QKV_MV_ROPE, // fused qkv mat-vec + in-kernel RoPE for Q,K (decode)
         GGML_OP_ROPE_BACK,
         GGML_OP_CLAMP,
         GGML_OP_CONV_TRANSPOSE_1D,
@@ -1700,6 +1701,22 @@ extern "C" {
             struct ggml_tensor  * b,
             float                 scale,
             float                 max_bias);
+
+    struct ggml_qkv_mv_rope_params {
+        int32_t n_head;
+        int32_t head_dim;
+        int32_t rotary_dim;
+        int32_t rope_type;
+        int32_t pos;
+        float   rope_freq_base;
+        float   rope_freq_scale;
+    };
+
+    GGML_API struct ggml_tensor * ggml_qkv_mv_rope(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * w_qkv,
+            struct ggml_qkv_mv_rope_params params);
 
     // rotary position embedding
     // if (mode & 1) - skip n_past elements (NOT SUPPORTED)

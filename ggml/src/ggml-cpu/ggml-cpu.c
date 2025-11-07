@@ -1924,6 +1924,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_rope(params, tensor);
             } break;
+        case GGML_OP_QKV_MV_ROPE:
+            {
+                ggml_compute_forward_qkv_mv_rope(params, tensor);
+            } break;
         case GGML_OP_ROPE_BACK:
             {
                 ggml_compute_forward_rope_back(params, tensor);
@@ -2199,6 +2203,13 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         // no need to multi-thread a no-op
         n_tasks = 1;
         return n_tasks;
+    }
+
+    if (node->op == GGML_OP_QKV_MV_ROPE) {
+        const struct ggml_qkv_mv_rope_params * p =
+            (const struct ggml_qkv_mv_rope_params *) node->op_params;
+        const int n_head = p ? p->n_head : 1;
+        return MIN(n_threads, n_head);
     }
 
     switch (node->op) {
