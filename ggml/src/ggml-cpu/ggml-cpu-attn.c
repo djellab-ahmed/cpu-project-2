@@ -207,7 +207,11 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         ensure_tls_buffer(&tls_v_buf, &tls_v_cap, (size_t) head_dim);
     }
 
-    int tile_tok = 256;
+    int tile_tok = 0;
+    memcpy(&tile_tok, &dst->op_params[4], sizeof(int));
+    if (tile_tok < 32 || tile_tok > 2048) {
+        tile_tok = 256;
+    }
     const char * tile_env = getenv("GPTOSS_FLASH_TILE");
     if (tile_env) {
         int tmp = atoi(tile_env);

@@ -4,6 +4,10 @@
 #include "gptoss-graph.h"
 #include "gptoss-kv-cells.h"
 #include "gptoss-memory.h"
+#include "gptoss-kv-layout.h"
+
+#include <cstddef>
+#include <cstdint>
 
 #include <unordered_map>
 #include <vector>
@@ -184,6 +188,26 @@ public:
     void set_input_kq_mask   (ggml_tensor * dst, const gptoss_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const gptoss_ubatch * ubatch) const;
 
+    //
+    // Interleaved KV layout (token-major) experimental API
+    //
+
+    bool init_interleaved(int n_stream,
+                          int n_head_kv,
+                          int64_t head_dim,
+                          size_t dtype_size,
+                          int64_t cap_tokens,
+                          int    tile_pad,
+                          bool   interleave,
+                          const char *hp_mode);
+
+    void append_token(int stream_idx, const void *k_src, const void *v_src);
+
+    ggml_tensor * as_k_ggml(ggml_context *ctx, int n_stream, int n_kv) const;
+    ggml_tensor * as_v_ggml(ggml_context *ctx, int n_stream, int n_kv) const;
+
+    const gptoss_kv_view & get_view() const;
+
 private:
     const gptoss_model & model;
     const gptoss_hparams & hparams;
@@ -236,6 +260,12 @@ private:
 
     // model layer id -> KV cache layer id
     std::unordered_map<int32_t, int32_t> map_layer_ids;
+
+    // Interleaved KV layout state
+    gptoss_kv_view view{};
+    int64_t cap_tokens = 0;
+    int64_t cur_tokens = 0;
+    size_t  dtype_size = 0;
 
     size_t total_size() const;
 
@@ -317,6 +347,8 @@ public:
     // get views of the current state of the cache
     ggml_tensor * get_k(ggml_context * ctx, int32_t il) const;
     ggml_tensor * get_v(ggml_context * ctx, int32_t il) const;
+
+    const gptoss_kv_cache * get_cache() const;
 
     // store k_cur and v_cur in the cache based on the provided head location
     // note: the heads in k_cur and v_cur should be layed out contiguously in memory
