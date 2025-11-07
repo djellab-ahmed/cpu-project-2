@@ -13,6 +13,14 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#if !defined(GGML_UNLIKELY)
+#    if defined(__GNUC__) || defined(__clang__)
+#        define GGML_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#    else
+#        define GGML_UNLIKELY(x) (x)
+#    endif
+#endif
+
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define GGML_TLS _Thread_local
 #elif defined(_MSC_VER)
