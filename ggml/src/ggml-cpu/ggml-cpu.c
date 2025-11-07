@@ -1924,6 +1924,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_rope(params, tensor);
             } break;
+        case GGML_OP_QKV_MV_ROPE:
+            {
+                ggml_compute_forward_qkv_mv_rope(params, tensor);
+            } break;
         case GGML_OP_ROPE_BACK:
             {
                 ggml_compute_forward_rope_back(params, tensor);
@@ -2321,6 +2325,7 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX_BACK:
         case GGML_OP_ROPE:
+        case GGML_OP_QKV_MV_ROPE:
         case GGML_OP_ROPE_BACK:
         case GGML_OP_ADD_REL_POS:
             {
