@@ -213,8 +213,8 @@ private:
     const gptoss_model & model;
     const gptoss_hparams & hparams;
 
-    ggml_type type_k_src = GGML_TYPE_F32;
-    ggml_type type_v_src = GGML_TYPE_F32;
+    ggml_type src_type_k = GGML_TYPE_F32;
+    ggml_type src_type_v = GGML_TYPE_F32;
 
     struct kv_layer {
         // layer index in the model

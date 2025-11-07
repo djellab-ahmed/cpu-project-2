@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define GGML_TLS _Thread_local
@@ -20,12 +21,10 @@
 #define GGML_TLS __thread
 #endif
 
-#if defined(__AVX2__) && defined(__FMA__)
 void flash_decode_q8_rowrow_avx2(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst,
         const struct gptoss_kv_view * kv_view);
-#endif
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -516,11 +515,22 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         kv_dtype == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_k == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_v == GPTOSS_KV_Q8_ROWROW) {
-#if defined(__AVX2__) && defined(__FMA__)
-        flash_decode_q8_rowrow_avx2(params, dst, kv_view);
-        return;
-#endif
-        flash_decode_q8_rowrow_scalar(params, dst, kv_view);
+        if (GGML_UNLIKELY(getenv("GPTOSS_KVQ8_DEBUG"))) {
+            static _Atomic int once = 0;
+            if (atomic_exchange(&once, 1) == 0) {
+                int tile_tok = 0;
+                memcpy(&tile_tok, &dst->op_params[4], sizeof(int));
+                if (tile_tok < 32 || tile_tok > 2048) {
+                    tile_tok = 256;
+                }
+                GGML_LOG_INFO("flash-decode: Q8 row,row path engaged (tile=%d)\n", tile_tok);
+            }
+        }
+        if (ggml_cpu_has_avx2() && ggml_cpu_has_fma()) {
+            flash_decode_q8_rowrow_avx2(params, dst, kv_view);
+        } else {
+            flash_decode_q8_rowrow_scalar(params, dst, kv_view);
+        }
         return;
     }
 
