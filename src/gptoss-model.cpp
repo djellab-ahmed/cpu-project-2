@@ -6,6 +6,7 @@
 #include "gptoss-cparams.h"
 #include "gptoss-model-loader.h"
 
+#include "ggml-cpu.h"
 #include "gptoss-kv-cache.h"
 #include "gptoss-kv-cache-iswa.h"
 #include "gptoss-memory-hybrid.h"
@@ -19,6 +20,7 @@
 #include <cfloat>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -215,6 +217,11 @@ bool maybe_use_fused_qkv(llm_graph_context & ctx,
     Qcur = fused.q;
     Kcur = fused.k;
     Vcur = fused.v;
+
+    const char * debug_env = std::getenv("GPTOSS_FUSE_QKV_ROPE_DEBUG");
+    if (debug_env && std::atoi(debug_env) != 0) {
+        std::fprintf(stderr, "[graph] layer %d: using GGML_OP_QKV_MV_ROPE\n", il);
+    }
 
     return true;
 }
@@ -6461,6 +6468,8 @@ bool gptoss_model::load_tensors(gptoss_model_loader & ml) {
         }
     }
 
+    build_fused_qkv_weights();
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -6468,6 +6477,117 @@ bool gptoss_model::load_tensors(gptoss_model_loader & ml) {
     }
 
     return true;
+}
+
+void gptoss_model::build_fused_qkv_weights() {
+    const int n_layer = hparams.n_layer;
+    std::vector<std::pair<int, ggml_tensor *>> fused_layers;
+    fused_layers.reserve(n_layer);
+
+    for (int il = 0; il < n_layer; ++il) {
+        auto & layer = layers[il];
+
+        if (layer.wqkv != nullptr) {
+            continue;
+        }
+
+        if (layer.wq == nullptr || layer.wk == nullptr || layer.wv == nullptr) {
+            continue;
+        }
+
+        if (layer.wq->type != layer.wk->type || layer.wq->type != layer.wv->type) {
+            continue;
+        }
+
+        const int64_t d_model = layer.wq->ne[0];
+        const int64_t q_cols  = layer.wq->ne[1];
+        const int64_t k_cols  = layer.wk->ne[1];
+        const int64_t v_cols  = layer.wv->ne[1];
+
+        if (layer.wk->ne[0] != d_model || layer.wv->ne[0] != d_model) {
+            continue;
+        }
+
+        if (q_cols != k_cols || q_cols != v_cols) {
+            continue;
+        }
+
+        if (q_cols == 0) {
+            continue;
+        }
+
+        fused_layers.emplace_back(il, nullptr);
+    }
+
+    if (fused_layers.empty()) {
+        return;
+    }
+
+    ggml_init_params ctx_params = {
+        /*.mem_size   =*/ ggml_tensor_overhead() * fused_layers.size(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context_ptr fused_ctx { ggml_init(ctx_params) };
+    if (!fused_ctx) {
+        throw std::runtime_error("failed to create fused qkv ggml context");
+    }
+
+    const auto tn = LLM_TN(arch);
+
+    for (auto & entry : fused_layers) {
+        const int il = entry.first;
+        auto & layer = layers[il];
+
+        const int64_t d_model = layer.wq->ne[0];
+        const int64_t cols    = layer.wq->ne[1];
+
+        ggml_tensor * wqkv = ggml_new_tensor_2d(fused_ctx.get(), layer.wq->type, d_model, 3 * cols);
+        std::string name = tn(LLM_TENSOR_ATTN_QKV, "weight", il).str() + std::string(".fused");
+        ggml_set_name(wqkv, name.c_str());
+        entry.second = wqkv;
+        layer.wqkv = wqkv;
+    }
+
+    ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
+    if (!cpu_buft) {
+        throw std::runtime_error("no CPU buffer type available for fused qkv weights");
+    }
+
+    ggml_backend_buffer_ptr buf { ggml_backend_alloc_ctx_tensors_from_buft(fused_ctx.get(), cpu_buft) };
+    if (!buf) {
+        throw std::runtime_error("unable to allocate fused qkv buffer");
+    }
+    ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+    std::vector<uint8_t> tmp;
+
+    for (const auto & entry : fused_layers) {
+        const int il = entry.first;
+        auto & layer = layers[il];
+        ggml_tensor * dst = layer.wqkv;
+
+        const size_t q_bytes = ggml_nbytes(layer.wq);
+        const size_t k_bytes = ggml_nbytes(layer.wk);
+        const size_t v_bytes = ggml_nbytes(layer.wv);
+        const size_t max_bytes = std::max({q_bytes, k_bytes, v_bytes});
+
+        tmp.resize(max_bytes);
+
+        ggml_backend_tensor_get(layer.wq, tmp.data(), 0, q_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), 0, q_bytes);
+
+        ggml_backend_tensor_get(layer.wk, tmp.data(), 0, k_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), q_bytes, k_bytes);
+
+        ggml_backend_tensor_get(layer.wv, tmp.data(), 0, v_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), q_bytes + k_bytes, v_bytes);
+
+        tensors_by_name.emplace_back(ggml_get_name(dst), dst);
+    }
+
+    pimpl->ctxs_bufs.emplace_back(std::move(fused_ctx), std::move(buf));
 }
 
 std::string gptoss_model::arch_name() const {
