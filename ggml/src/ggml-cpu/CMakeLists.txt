@@ -21,6 +21,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
 
     ggml_add_backend_library(${GGML_CPU_NAME})
 
+    if (TARGET ggml-cpu-attn-q8-avx2)
+        target_link_libraries(${GGML_CPU_NAME} PRIVATE ggml-cpu-attn-q8-avx2)
+    endif()
+
     list (APPEND GGML_CPU_SOURCES
         ggml-cpu/ggml-cpu.c
         ggml-cpu/ggml-cpu.cpp
