@@ -8,13 +8,18 @@ set -euo pipefail
 PROMPTS_FILE="${1:-tools/bench/prompts.txt}"
 BIN="${BIN:-./build/bin/gptoss-cli}"
 
+KV_Q8_ARGS=()
+if [[ "${KV_Q8:-0}" != "0" ]]; then
+  KV_Q8_ARGS+=(--kv-q8 --kv-q8-scheme row,row)
+fi
+
 total_tok=0
 total_sec=0
 prompt_idx=0
 
 while IFS= read -r P; do
   # the CLI should print a single CSV line at end in the form: "BENCH,P_MS=...,D_MS=...,TOK=..."
-  OUT=$("$BIN" -m "$MODEL" -p "$P" -n "$NPRED" -t "$THREADS" --ctx-size "$CTX" --quiet --bench)
+  OUT=$("$BIN" -m "$MODEL" -p "$P" -n "$NPRED" -t "$THREADS" --ctx-size "$CTX" "${KV_Q8_ARGS[@]}" --quiet --bench)
   # Expect last line like: BENCH,P_MS=...,D_MS=...,TOK=...
   LINE=$(echo "$OUT" | awk -F',' '/^BENCH/ {print $0}' | tail -n1)
   if [[ -z "$LINE" ]]; then

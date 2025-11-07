@@ -3,6 +3,7 @@
 #include "ggml-cpu-impl.h"
 #include "ggml-impl.h"
 #include "ops.h"
+#include "../../../src/gptoss-kv-view.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -124,7 +125,7 @@ static inline float dot_q_k_f32(const float * GGML_RESTRICT q, const float * GGM
 #endif
 }
 
-void ggml_compute_forward_flash_attn_decode_cpu(
+static void ggml_compute_forward_flash_attn_decode_cpu_fp16(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
     if (!gptoss_flash_decode_enabled()) {
@@ -350,5 +351,23 @@ void ggml_compute_forward_flash_attn_decode_cpu(
 #endif
         }
     }
+}
+
+void ggml_compute_forward_flash_attn_decode_cpu(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst) {
+    const struct gptoss_kv_view * kv_view = (const struct gptoss_kv_view *) dst->extra;
+    const int32_t kv_dtype = ggml_get_op_params_i32(dst, 2);
+
+    if (kv_view != NULL &&
+        kv_dtype == GPTOSS_KV_Q8_ROWROW &&
+        kv_view->dtype_k == GPTOSS_KV_Q8_ROWROW &&
+        kv_view->dtype_v == GPTOSS_KV_Q8_ROWROW) {
+        // Placeholder: dispatch to FP16 path until INT8 kernels are implemented.
+        ggml_compute_forward_flash_attn_decode_cpu_fp16(params, dst);
+        return;
+    }
+
+    ggml_compute_forward_flash_attn_decode_cpu_fp16(params, dst);
 }
 

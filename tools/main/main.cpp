@@ -63,6 +63,8 @@ struct options {
     bool        measure_tps    = false;
     bool        quiet_mode     = false;
     bool        bench_mode     = false;
+    bool        kv_q8          = false;
+    std::string kv_q8_scheme   = "row,row";
 };
 
 void print_usage(const char * program) {
@@ -86,6 +88,8 @@ void print_usage(const char * program) {
               << "      --top-k N            Top-k limit (default 40, 0 = unlimited)\n"
               << "      --repeat-penalty R   Repetition penalty (default 1.1)\n"
               << "      --repeat-last-n N    Window for repetition penalty (default 64)\n"
+              << "      --kv-q8              Enable experimental INT8 KV cache\n"
+              << "      --kv-q8-scheme NAME  INT8 KV cache scheme (default row,row)\n"
               << "      --quiet              Suppress streamed token output\n"
               << "  -h, --help              Show this help message\n";
 }
@@ -260,6 +264,19 @@ bool parse_arguments(int argc, char ** argv, options & opts) {
             if (!parse_int(arg.c_str(), value, opts.repeat_last_n)) {
                 return false;
             }
+        } else if (arg == "--kv-q8") {
+            opts.kv_q8 = true;
+        } else if (arg == "--kv-q8-scheme") {
+            const char * value = require_value(++i);
+            if (!value) {
+                std::cerr << "Missing value for --kv-q8-scheme\n";
+                return false;
+            }
+            opts.kv_q8_scheme = value;
+            if (opts.kv_q8_scheme != "row,row") {
+                std::cerr << "Unsupported --kv-q8-scheme: " << opts.kv_q8_scheme << "\n";
+                return false;
+            }
         } else if (arg == "--measure-tps") {
             opts.measure_tps = true;
         } else if (arg == "--quiet") {
@@ -418,6 +435,8 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     ctx_params.n_batch  = std::min<uint32_t>(ctx_params.n_ctx, batch_limit);
     ctx_params.n_ubatch = std::min<uint32_t>(ctx_params.n_ctx, ubatch_limit);
     ctx_params.n_seq_max = 1;
+    ctx_params.kv_cache_q8 = opts.kv_q8;
+    std::snprintf(ctx_params.kv_cache_q8_scheme, sizeof(ctx_params.kv_cache_q8_scheme), "%s", opts.kv_q8_scheme.c_str());
 
     gptoss_context * ctx = gptoss_init_from_model(model, ctx_params);
     if (!ctx) {

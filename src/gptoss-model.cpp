@@ -20133,6 +20133,24 @@ gptoss_memory_i * gptoss_model::create_memory(const gptoss_memory_params & param
                         };
                     }
 
+                    auto configure_q8_layout = [&](gptoss_kv_cache * cache) {
+                        if (!cache || !cparams.kv_q8) {
+                            return;
+                        }
+
+                        const uint32_t n_head_kv = hparams.n_head_kv();
+                        if (n_head_kv == 0 || hparams.n_embd_head_k == 0) {
+                            return;
+                        }
+
+                        const int n_streams = cparams.kv_unified ? 1 : (int) cparams.n_seq_max;
+                        const int64_t cap_tokens = n_ctx_per_stream;
+                        if (!cache->init_interleaved(n_streams, (int) n_head_kv, hparams.n_embd_head_k, /*dtype_sz=*/1,
+                                                     cap_tokens, padding, /*interleave=*/true, /*hp_mode=*/nullptr)) {
+                            GPTOSS_LOG_WARN("%s: failed to initialize INT8 KV view\n", __func__);
+                        }
+                    };
+
                     if (hparams.swa_type != GPTOSS_SWA_TYPE_NONE) {
                         GGML_ASSERT(hparams.is_swa_any());
 
@@ -20150,6 +20168,12 @@ gptoss_memory_i * gptoss_model::create_memory(const gptoss_memory_params & param
                                 padding,
                                 nullptr,
                                 reuse);
+
+                        if (cparams.kv_q8) {
+                            auto * kv_iswa = static_cast<gptoss_kv_cache_iswa *>(res);
+                            configure_q8_layout(kv_iswa->get_base());
+                            configure_q8_layout(kv_iswa->get_swa());
+                        }
                     } else {
                         GGML_ASSERT(!hparams.is_swa_any());
 
@@ -20167,6 +20191,8 @@ gptoss_memory_i * gptoss_model::create_memory(const gptoss_memory_params & param
                                 hparams.swa_type,
                                 nullptr,
                                 nullptr);
+
+                        configure_q8_layout(static_cast<gptoss_kv_cache *>(res));
                     }
                 }
             }

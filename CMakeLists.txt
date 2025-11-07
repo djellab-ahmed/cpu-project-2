@@ -74,6 +74,11 @@ endif()
 
 option(GPTOSS_USE_SYSTEM_GGML "Use system libggml" OFF)
 
+option(GPTOSS_KV_Q8 "Enable INT8 KV cache support" ON)
+if(GPTOSS_KV_Q8)
+  add_compile_definitions(GPTOSS_KV_Q8=1)
+endif()
+
 if (EMSCRIPTEN)
     set(BUILD_SHARED_LIBS_DEFAULT OFF)
 
