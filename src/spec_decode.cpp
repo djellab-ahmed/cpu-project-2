@@ -503,17 +503,31 @@ int spec_step(
         }
         const float * logits_raw = gptoss_get_logits(sx.draft_ctx);
         if (logits_raw) {
-            build_adjusted_probs(
-                    logits_raw,
-                    vocab_size,
-                    temperature,
-                    top_k,
-                    top_p,
-                    accept_window,
-                    repeat_penalty,
-                    sx.q_next,
-                    sx.candidate_order,
-                    sx.candidate_scratch);
+            if (cfg.greedy_draft) {
+                build_adjusted_probs(
+                        logits_raw,
+                        vocab_size,
+                        /*temperature=*/0.0f,
+                        /*top_k=*/0,
+                        /*top_p=*/1.0f,
+                        accept_window,
+                        repeat_penalty,
+                        sx.q_next,
+                        sx.candidate_order,
+                        sx.candidate_scratch);
+            } else {
+                build_adjusted_probs(
+                        logits_raw,
+                        vocab_size,
+                        temperature,
+                        top_k,
+                        top_p,
+                        accept_window,
+                        repeat_penalty,
+                        sx.q_next,
+                        sx.candidate_order,
+                        sx.candidate_scratch);
+            }
 
             if (cfg.greedy_draft) {
                 enforce_greedy_delta(sx.q_next, sx.candidate_order);
@@ -529,40 +543,30 @@ int spec_step(
             if (value < 0.0f) {
                 value = 0.0f;
             }
-            sx.q_next[static_cast<size_t>(i)] = value;
+            sx.p_next[static_cast<size_t>(i)] = value;
             diff_sum += value;
         }
 
         if (diff_sum > 0.0f) {
             for (int i = 0; i < vocab_size; ++i) {
-                sx.p_next[static_cast<size_t>(i)] = sx.q_next[static_cast<size_t>(i)] / diff_sum;
+                sx.p_next[static_cast<size_t>(i)] /= diff_sum;
             }
-            sx.candidate_order.clear();
-            for (int i = 0; i < vocab_size; ++i) {
-                if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
-                    sx.candidate_order.push_back(i);
-                }
-            }
-            std::sort(
-                    sx.candidate_order.begin(),
-                    sx.candidate_order.end(),
-                    [&](int a, int b) {
-                        return sx.p_next[static_cast<size_t>(a)] > sx.p_next[static_cast<size_t>(b)];
-                    });
         } else {
-            sx.candidate_order.clear();
-            for (int i = 0; i < vocab_size; ++i) {
-                if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
-                    sx.candidate_order.push_back(i);
-                }
-            }
-            std::sort(
-                    sx.candidate_order.begin(),
-                    sx.candidate_order.end(),
-                    [&](int a, int b) {
-                        return sx.p_next[static_cast<size_t>(a)] > sx.p_next[static_cast<size_t>(b)];
-                    });
+            std::fill(sx.p_next.begin(), sx.p_next.end(), 0.0f);
         }
+
+        sx.candidate_order.clear();
+        for (int i = 0; i < vocab_size; ++i) {
+            if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
+                sx.candidate_order.push_back(i);
+            }
+        }
+        std::sort(
+                sx.candidate_order.begin(),
+                sx.candidate_order.end(),
+                [&](int a, int b) {
+                    return sx.p_next[static_cast<size_t>(a)] > sx.p_next[static_cast<size_t>(b)];
+                });
     }
 
     const bool eos_accepted = (eos_token != GPTOSS_TOKEN_NULL);
