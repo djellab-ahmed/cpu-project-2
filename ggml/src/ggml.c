@@ -5067,12 +5067,13 @@ struct ggml_tensor * ggml_top_k(
 
 // ggml_flash_attn_decode
 
-struct ggml_tensor * ggml_flash_attn_decode(
+struct ggml_tensor * ggml_flash_attn_decode_ex(
         struct ggml_context * ctx,
         struct ggml_tensor  * q,
         struct ggml_tensor  * k,
         struct ggml_tensor  * v,
-        float                 scale) {
+        float                 scale,
+        int32_t               tile_tok) {
     GGML_ASSERT(q->ne[0] > 0);
     GGML_ASSERT(q->type == GGML_TYPE_F32 || q->type == GGML_TYPE_F16 || q->type == GGML_TYPE_BF16);
     GGML_ASSERT(k->type == GGML_TYPE_F32 || k->type == GGML_TYPE_F16 || k->type == GGML_TYPE_BF16);
@@ -5096,8 +5097,18 @@ struct ggml_tensor * ggml_flash_attn_decode(
 
     memset(out->op_params, 0, sizeof(out->op_params));
     memcpy(&out->op_params[0], &scale, sizeof(float));
+    memcpy(&out->op_params[4], &tile_tok, sizeof(int32_t));
 
     return out;
+}
+
+struct ggml_tensor * ggml_flash_attn_decode(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        float                 scale) {
+    return ggml_flash_attn_decode_ex(ctx, q, k, v, scale, /*tile_tok*/0);
 }
 
 // ggml_flash_attn_ext

@@ -2221,6 +2221,17 @@ extern "C" {
 
 #define GGML_KQ_MASK_PAD 64
 
+    // Extended builder with explicit tile size (tokens). If tile_tok == 0, the
+    // kernel selects a default (or honors GPTOSS_FLASH_TILE when set).
+    GGML_API struct ggml_tensor * ggml_flash_attn_decode_ex(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            float                 scale,
+            int32_t               tile_tok);
+
+    // Backwards-compatible wrapper (tile_tok = 0).
     GGML_API struct ggml_tensor * ggml_flash_attn_decode(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,

@@ -4,13 +4,91 @@
 #include "gptoss-io.h"
 #include "gptoss-model.h"
 #include "gptoss-context.h"
+#include "ggml.h"
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <stdexcept>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+#include <errno.h>
+#endif
+
+int gptoss_kv_default_tile_pad(void) {
+    const char *v = std::getenv("GPTOSS_KV_TILE");
+    int pad = v ? std::atoi(v) : 128;
+    if (pad < 32)  pad = 32;
+    if (pad > 2048) pad = 2048;
+    int p = 1;
+    while (p < pad) {
+        p <<= 1;
+    }
+    return p;
+}
+
+static size_t round_up(size_t x, size_t a) {
+    return (x + a - 1) & ~(a - 1);
+}
+
+static void * kv_mmap_alloc(size_t bytes, bool &huge_ok, const char *hp_mode) {
+    huge_ok = false;
+#ifdef __linux__
+    bool want_huge = false;
+    bool force_huge = false;
+    if (!hp_mode || !*hp_mode || std::strcmp(hp_mode, "auto") == 0) {
+        want_huge = true;
+    } else if (std::strcmp(hp_mode, "1") == 0) {
+        want_huge = true;
+        force_huge = true;
+    }
+
+    if (want_huge) {
+#ifdef MAP_HUGETLB
+#ifndef MAP_HUGE_2MB
+#define MAP_HUGE_SHIFT 26
+#define MAP_HUGE_2MB   (21 << MAP_HUGE_SHIFT)
+#endif
+        size_t sz = round_up(bytes, 2u * 1024u * 1024u);
+        int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB;
+#ifdef MAP_POPULATE
+        flags |= MAP_POPULATE;
+#endif
+        flags |= MAP_HUGE_2MB;
+        void *p = mmap(nullptr, sz, PROT_READ | PROT_WRITE, flags, -1, 0);
+        if (p != MAP_FAILED) {
+            huge_ok = true;
+            return p;
+        }
+#endif
+        if (force_huge) {
+            return nullptr;
+        }
+    }
+
+    void *p2 = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p2 != MAP_FAILED) {
+#ifdef MADV_HUGEPAGE
+        if (!hp_mode || std::strcmp(hp_mode, "0") != 0) {
+            (void)madvise(p2, bytes, MADV_HUGEPAGE);
+        }
+#else
+        (void)hp_mode;
+#endif
+        return p2;
+    }
+    return nullptr;
+#else
+    (void)hp_mode;
+    return ggml_aligned_malloc(bytes);
+#endif
+}
 
 //
 // gptoss_kv_cache
@@ -1975,6 +2053,10 @@ ggml_tensor * gptoss_kv_cache_context::get_v(ggml_context * ctx, int32_t il) con
     return kv->get_v(ctx, il, n_kv, sinfos[i_cur]);
 }
 
+const gptoss_kv_cache * gptoss_kv_cache_context::get_cache() const {
+    return kv;
+}
+
 ggml_tensor * gptoss_kv_cache_context::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il) const {
     return kv->cpy_k(ctx, k_cur, k_idxs, il, sinfos[i_cur]);
 }
@@ -2009,6 +2091,115 @@ void gptoss_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const gptoss_
 
 void gptoss_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const gptoss_ubatch * ubatch) const {
     kv->set_input_pos_bucket(dst, ubatch);
+}
+
+bool gptoss_kv_cache::init_interleaved(int n_stream,
+                                       int n_head_kv,
+                                       int64_t head_dim,
+                                       size_t dtype_sz,
+                                       int64_t cap_toks,
+                                       int tile_pad,
+                                       bool interleave,
+                                       const char * hp_mode) {
+    dtype_size       = dtype_sz;
+    view.head_dim    = head_dim;
+    view.n_head_kv   = n_head_kv;
+    view.block_bytes = static_cast<size_t>(head_dim) * dtype_sz;
+
+    int pad = tile_pad > 0 ? tile_pad : gptoss_kv_default_tile_pad();
+    if (pad < 32) { pad = 32; }
+    if (pad > 2048) { pad = 2048; }
+    int pow2 = 1;
+    while (pow2 < pad) {
+        pow2 <<= 1;
+    }
+    view.tile_pad    = pow2;
+    view.interleaved = interleave ? 1 : 0;
+
+    size_t head_stride = view.block_bytes;
+    size_t token_stride = static_cast<size_t>(n_head_kv) * view.block_bytes;
+    if (interleave) {
+        head_stride  = 2 * view.block_bytes;
+        token_stride = static_cast<size_t>(n_head_kv) * head_stride;
+    } else {
+        token_stride *= 2;
+    }
+    view.stride_head  = head_stride;
+    view.stride_token = token_stride;
+    view.stride_stream = 0;
+
+    cur_tokens = 0;
+    cap_tokens = cap_toks > 0 ? cap_toks : static_cast<int64_t>(view.tile_pad);
+    int64_t mask = static_cast<int64_t>(view.tile_pad) - 1;
+    cap_tokens = (cap_tokens + mask) & ~mask;
+
+    size_t bytes = static_cast<size_t>(n_stream) * static_cast<size_t>(cap_tokens) * view.stride_token;
+    bool huge_ok = false;
+    view.base = static_cast<uint8_t *>(kv_mmap_alloc(bytes, huge_ok, hp_mode));
+    if (!view.base) {
+        return false;
+    }
+#ifdef __linux__
+    view.huge_pages = huge_ok ? 1 : 0;
+#endif
+    std::memset(view.base, 0, bytes);
+    view.stride_stream = static_cast<size_t>(cap_tokens) * view.stride_token;
+    return true;
+}
+
+void gptoss_kv_cache::append_token(int stream_idx, const void * k_src, const void * v_src) {
+    GGML_ASSERT(view.base && "KV view not initialized");
+    GGML_ASSERT(cur_tokens < cap_tokens && "KV capacity exceeded; allocate >= n_ctx_per_seq");
+
+    uint8_t * base_stream = view.base + static_cast<size_t>(stream_idx) * view.stride_stream;
+    uint8_t * token_ptr   = base_stream + static_cast<size_t>(cur_tokens) * view.stride_token;
+    size_t head_span = static_cast<size_t>(view.n_head_kv) * view.block_bytes;
+    for (int h = 0; h < view.n_head_kv; ++h) {
+        size_t head_off = static_cast<size_t>(h) * view.block_bytes;
+        uint8_t * k_dst = token_ptr + head_off;
+        uint8_t * v_dst = view.interleaved ? (k_dst + view.block_bytes)
+                                          : (token_ptr + head_span + head_off);
+        std::memcpy(k_dst, static_cast<const uint8_t *>(k_src) + head_off, view.block_bytes);
+        std::memcpy(v_dst, static_cast<const uint8_t *>(v_src) + head_off, view.block_bytes);
+    }
+    ++cur_tokens;
+}
+
+static ggml_tensor * make_kv_view(ggml_context * ctx,
+                                  const gptoss_kv_view & view,
+                                  bool is_v,
+                                  int n_stream,
+                                  int n_kv,
+                                  ggml_type dtype) {
+    int64_t ne[4] = { view.head_dim, view.n_head_kv, n_kv, n_stream };
+    ggml_tensor * t = ggml_new_tensor(ctx, dtype, 4, ne);
+    size_t base_offset = 0;
+    if (is_v) {
+        base_offset = view.interleaved ? view.block_bytes
+                                       : static_cast<size_t>(view.n_head_kv) * view.block_bytes;
+    }
+    t->data = view.base ? view.base + base_offset : nullptr;
+    t->nb[0] = ggml_type_size(dtype);
+    t->nb[1] = view.stride_head;
+    t->nb[2] = view.stride_token;
+    t->nb[3] = view.stride_stream;
+    return t;
+}
+
+ggml_tensor * gptoss_kv_cache::as_k_ggml(ggml_context * ctx, int n_stream, int n_kv) const {
+    ggml_type dt = (dtype_size == 2) ? GGML_TYPE_F16 :
+                   (dtype_size == 4) ? GGML_TYPE_F32 : GGML_TYPE_F16;
+    return make_kv_view(ctx, view, /*is_v=*/false, n_stream, n_kv, dt);
+}
+
+ggml_tensor * gptoss_kv_cache::as_v_ggml(ggml_context * ctx, int n_stream, int n_kv) const {
+    ggml_type dt = (dtype_size == 2) ? GGML_TYPE_F16 :
+                   (dtype_size == 4) ? GGML_TYPE_F32 : GGML_TYPE_F16;
+    return make_kv_view(ctx, view, /*is_v=*/true, n_stream, n_kv, dt);
+}
+
+const gptoss_kv_view & gptoss_kv_cache::get_view() const {
+    return view;
 }
 
 uint32_t gptoss_kv_cache::get_padding(const gptoss_cparams & cparams) {

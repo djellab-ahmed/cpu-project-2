@@ -1399,7 +1399,34 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             && decode_single_token && causal_only && !has_mask && no_sinks;
 
         if (use_flash_decode) {
-            cur = ggml_flash_attn_decode(ctx0, q, k_use, v_use, kq_scale);
+            int tile_tok = gptoss_kv_default_tile_pad();
+            const gptoss_kv_cache * kv_cache_ptr = nullptr;
+
+            if (mctx != nullptr) {
+                if (const auto * kv_ctx = dynamic_cast<const gptoss_kv_cache_context *>(mctx)) {
+                    kv_cache_ptr = kv_ctx->get_cache();
+                } else if (const auto * kv_iswa_ctx = dynamic_cast<const gptoss_kv_cache_iswa_context *>(mctx)) {
+                    const auto * base_ctx = kv_iswa_ctx->get_base();
+                    if (base_ctx) {
+                        kv_cache_ptr = base_ctx->get_cache();
+                    }
+                }
+            }
+
+            if (kv_cache_ptr) {
+                const gptoss_kv_view & kv_view = kv_cache_ptr->get_view();
+                if (kv_view.interleaved) {
+                    tile_tok = kv_view.tile_pad;
+                    const int n_stream_flash = q->ne[3] > 0 ? static_cast<int>(q->ne[3]) : 1;
+                    ggml_tensor * k_it = kv_cache_ptr->as_k_ggml(ctx0, n_stream_flash, static_cast<int>(k->ne[2]));
+                    ggml_tensor * v_it = kv_cache_ptr->as_v_ggml(ctx0, n_stream_flash, static_cast<int>(v->ne[2]));
+                    cur = ggml_flash_attn_decode_ex(ctx0, q, k_it, v_it, kq_scale, tile_tok);
+                } else {
+                    cur = ggml_flash_attn_decode_ex(ctx0, q, k_use, v_use, kq_scale, tile_tok);
+                }
+            } else {
+                cur = ggml_flash_attn_decode_ex(ctx0, q, k_use, v_use, kq_scale, tile_tok);
+            }
             cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
         } else {
             cur = ggml_flash_attn_ext(ctx0, q, k_use, v_use, kq_mask, kq_scale, hparams.f_max_alibi_bias,
