@@ -110,6 +110,20 @@ sudo sh -c 'echo "* soft memlock unlimited" >> /etc/security/limits.conf'
 sudo sh -c 'echo "* hard memlock unlimited" >> /etc/security/limits.conf'
 ulimit -l unlimited
 
+## Speculative decoding (experimental)
+
+`gptoss-cli` can run lossless speculative decoding inspired by Leviathan et al. (ICML'23). Supply a lightweight draft GGUF via `--spec-draft-model <path>` and the verifier (primary model) will validate proposed prefixes in batches while preserving the exact sampling distribution.
+
+Key flags:
+
+- `--spec-draft-model <GGUF>`: enable speculative mode (the draft model must share vocab/BOS/EOS with the verifier).
+- `--spec-max-propose L`: maximum tokens proposed per step (default 8).
+- `--spec-min-accept R`: if the exponential moving average acceptance drops below `R`, the engine temporarily falls back to single-token verification (default disabled).
+- `--spec-greedy-draft [BOOL]`: let the draft pick the top token deterministically (default true).
+- `--spec-debug`: print acceptance telemetry per step to stderr.
+
+The draft keeps its own KV cache; the verifier owns the final sample stream. For a fixed seed and sampler configuration the output remains identical to baseline decoding.
+
 
 ---
 

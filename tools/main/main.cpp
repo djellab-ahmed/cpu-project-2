@@ -1,4 +1,5 @@
 #include "gptoss.h"
+#include "spec_decode.h"
 #include "ggml.h"
 #include "ggml-cpu.h"
 
@@ -46,6 +47,7 @@ namespace {
 struct options {
     std::string model_path;
     std::string prompt;
+    std::string spec_draft_model;
     int32_t     threads        = -1;
     int32_t     threads_batch  = -1;
     uint32_t    context_size   = 0;
@@ -63,6 +65,10 @@ struct options {
     bool        measure_tps    = false;
     bool        quiet_mode     = false;
     bool        bench_mode     = false;
+    int32_t     spec_max_propose = 8;
+    float       spec_min_accept  = 0.0f;
+    bool        spec_greedy_draft = true;
+    bool        spec_debug        = false;
 };
 
 void print_usage(const char * program) {
@@ -86,6 +92,11 @@ void print_usage(const char * program) {
               << "      --top-k N            Top-k limit (default 40, 0 = unlimited)\n"
               << "      --repeat-penalty R   Repetition penalty (default 1.1)\n"
               << "      --repeat-last-n N    Window for repetition penalty (default 64)\n"
+              << "      --spec-draft-model PATH  Enable speculative decoding with draft model\n"
+              << "      --spec-max-propose N    Draft proposals per step (default 8)\n"
+              << "      --spec-min-accept R     Minimum EWMA acceptance before falling back\n"
+              << "      --spec-greedy-draft [BOOL]  Draft proposes greedily (default true)\n"
+              << "      --spec-debug            Log speculative decoding telemetry\n"
               << "      --quiet              Suppress streamed token output\n"
               << "  -h, --help              Show this help message\n";
 }
@@ -133,6 +144,28 @@ bool parse_float(const char * arg, const char * value, float & out) {
     }
     out = parsed;
     return true;
+}
+
+bool parse_bool_flag(const char * arg, const char * value, bool & out) {
+    if (!value) {
+        out = true;
+        return true;
+    }
+    std::string lower;
+    lower.reserve(std::strlen(value));
+    for (const char * p = value; *p; ++p) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*p))));
+    }
+    if (lower == "1" || lower == "true" || lower == "yes" || lower == "on") {
+        out = true;
+        return true;
+    }
+    if (lower == "0" || lower == "false" || lower == "no" || lower == "off") {
+        out = false;
+        return true;
+    }
+    std::cerr << "Invalid boolean for " << arg << ": " << value << "\n";
+    return false;
 }
 
 ggml_numa_strategy parse_numa_mode(const std::string & value) {
@@ -260,6 +293,45 @@ bool parse_arguments(int argc, char ** argv, options & opts) {
             if (!parse_int(arg.c_str(), value, opts.repeat_last_n)) {
                 return false;
             }
+        } else if (arg == "--spec-draft-model") {
+            const char * value = require_value(++i);
+            if (!value) {
+                std::cerr << "Missing path for --spec-draft-model\n";
+                return false;
+            }
+            opts.spec_draft_model = value;
+        } else if (arg == "--spec-max-propose") {
+            const char * value = require_value(++i);
+            if (!parse_int(arg.c_str(), value, opts.spec_max_propose)) {
+                return false;
+            }
+            if (opts.spec_max_propose < 1) {
+                opts.spec_max_propose = 1;
+            }
+        } else if (arg == "--spec-min-accept") {
+            const char * value = require_value(++i);
+            if (!parse_float(arg.c_str(), value, opts.spec_min_accept)) {
+                return false;
+            }
+            if (opts.spec_min_accept < 0.0f) {
+                opts.spec_min_accept = 0.0f;
+            }
+        } else if (arg == "--spec-greedy-draft") {
+            const char * value = nullptr;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                value = argv[++i];
+            }
+            if (!parse_bool_flag(arg.c_str(), value, opts.spec_greedy_draft)) {
+                return false;
+            }
+        } else if (arg == "--spec-debug") {
+            const char * value = nullptr;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                value = argv[++i];
+            }
+            if (!parse_bool_flag(arg.c_str(), value, opts.spec_debug)) {
+                return false;
+            }
         } else if (arg == "--measure-tps") {
             opts.measure_tps = true;
         } else if (arg == "--quiet") {
@@ -380,6 +452,10 @@ struct generation_metrics {
     double elapsed_seconds  = 0.0;
     double prefill_ms       = 0.0;
     double decode_ms        = 0.0;
+    uint64_t spec_steps     = 0;
+    uint64_t spec_proposed  = 0;
+    uint64_t spec_accepted  = 0;
+    double   spec_ewma      = 0.0;
 };
 
 bool run_generation(const options & opts, gptoss_model * model, const std::string & prompt, bool stream_tokens, generation_metrics & metrics) {
@@ -425,6 +501,43 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
         return false;
     }
 
+    const bool spec_enabled = !opts.spec_draft_model.empty();
+    gptoss_model * draft_model = nullptr;
+    gptoss_context * draft_ctx = nullptr;
+
+    if (spec_enabled) {
+        gptoss_model_params draft_model_params = gptoss_model_default_params();
+        draft_model_params.use_mlock = opts.use_mlock;
+        draft_model = gptoss_model_load_from_file(opts.spec_draft_model.c_str(), draft_model_params);
+        if (!draft_model) {
+            std::cerr << "Failed to load draft model: " << opts.spec_draft_model << "\n";
+            gptoss_free(ctx);
+            return false;
+        }
+        const gptoss_vocab * draft_vocab = gptoss_model_get_vocab(draft_model);
+        if (!draft_vocab) {
+            std::cerr << "Draft model has no vocabulary\n";
+            gptoss_model_free(draft_model);
+            gptoss_free(ctx);
+            return false;
+        }
+        if (gptoss_vocab_n_tokens(draft_vocab) != gptoss_vocab_n_tokens(vocab) ||
+            gptoss_vocab_bos(draft_vocab) != gptoss_vocab_bos(vocab) ||
+            gptoss_vocab_eos(draft_vocab) != gptoss_vocab_eos(vocab)) {
+            std::cerr << "Draft model vocabulary is incompatible with verifier\n";
+            gptoss_model_free(draft_model);
+            gptoss_free(ctx);
+            return false;
+        }
+        draft_ctx = gptoss_init_from_model(draft_model, ctx_params);
+        if (!draft_ctx) {
+            std::cerr << "Failed to create draft context\n";
+            gptoss_model_free(draft_model);
+            gptoss_free(ctx);
+            return false;
+        }
+    }
+
     const uint32_t batch_tokens = ctx_params.n_batch;
     size_t processed = 0;
     const size_t repeat_window = opts.repeat_last_n > 0 ? static_cast<size_t>(opts.repeat_last_n) : 0;
@@ -447,9 +560,32 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
         if (rc != 0) {
             std::cerr << "gptoss_decode failed during prompt evaluation (code " << rc << ")\n";
             gptoss_free(ctx);
+            if (draft_ctx) {
+                gptoss_free(draft_ctx);
+            }
+            if (draft_model) {
+                gptoss_model_free(draft_model);
+            }
             return false;
         }
         processed += n_eval;
+    }
+
+    if (spec_enabled) {
+        size_t draft_processed = 0;
+        while (draft_processed < prompt_tokens.size()) {
+            const uint32_t n_eval = std::min<uint32_t>(batch_tokens, static_cast<uint32_t>(prompt_tokens.size() - draft_processed));
+            gptoss_batch batch = gptoss_batch_get_one(prompt_tokens.data() + draft_processed, static_cast<int32_t>(n_eval));
+            const int32_t rc = gptoss_decode(draft_ctx, batch);
+            if (rc != 0) {
+                std::cerr << "Draft decode failed during prompt evaluation (code " << rc << ")\n";
+                gptoss_free(ctx);
+                gptoss_free(draft_ctx);
+                gptoss_model_free(draft_model);
+                return false;
+            }
+            draft_processed += n_eval;
+        }
     }
 
     auto prefill_end = std::chrono::steady_clock::now();
@@ -467,140 +603,260 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
         rng.seed(static_cast<uint32_t>(opts.seed));
     }
 
-    std::vector<float> logits_buffer(static_cast<size_t>(vocab_size));
-    std::vector<int> candidates;
-    candidates.reserve(static_cast<size_t>(vocab_size));
-
     size_t generated_tokens = 0;
-
     auto decode_start = prefill_end;
+    bool success = true;
 
-    while (remaining-- > 0) {
-        float * logits_raw = gptoss_get_logits(ctx);
-        if (!logits_raw) {
-            std::cerr << "Failed to obtain logits from context\n";
-            break;
+    if (spec_enabled) {
+        spec_ctx sx;
+        sx.verifier_model = model;
+        sx.verifier_ctx = ctx;
+        sx.draft_model = draft_model;
+        sx.draft_ctx = draft_ctx;
+
+        spec_cfg scfg;
+        scfg.max_propose = std::max(1, opts.spec_max_propose);
+        scfg.min_accept = opts.spec_min_accept;
+        scfg.greedy_draft = opts.spec_greedy_draft;
+        scfg.debug = opts.spec_debug;
+
+        spec_metrics smetrics;
+        std::vector<gptoss_token> generated_sequence;
+        generated_sequence.reserve(opts.n_predict > 0 ? static_cast<size_t>(opts.n_predict) : 128u);
+
+        bool force_baseline = false;
+        bool stop = false;
+        const float hysteresis = 0.1f;
+
+        while (remaining > 0 && !stop) {
+            spec_cfg step_cfg = scfg;
+            if (force_baseline) {
+                step_cfg.max_propose = 1;
+            }
+            if (opts.n_predict >= 0) {
+                step_cfg.max_propose = std::min(step_cfg.max_propose, std::max(1, remaining));
+            }
+
+            std::vector<gptoss_token> repetition_source;
+            repetition_source.reserve(recent_tokens.size());
+            for (gptoss_token tok : recent_tokens) {
+                repetition_source.push_back(tok);
+            }
+
+            const size_t before = generated_sequence.size();
+            const int appended = spec_step(
+                sx,
+                step_cfg,
+                generated_sequence,
+                smetrics,
+                repetition_source,
+                opts.temperature,
+                opts.top_k,
+                opts.top_p,
+                opts.repeat_penalty,
+                opts.repeat_last_n,
+                rng);
+
+            if (appended <= 0) {
+                success = false;
+                break;
+            }
+
+            for (size_t idx = before; idx < generated_sequence.size(); ++idx) {
+                const gptoss_token tok = generated_sequence[idx];
+                if (stream_tokens) {
+                    std::cout << token_to_string(vocab, tok);
+                    std::cout.flush();
+                }
+                ++generated_tokens;
+                if (repeat_window > 0) {
+                    if (recent_tokens.size() == repeat_window) {
+                        recent_tokens.pop_front();
+                    }
+                    recent_tokens.push_back(tok);
+                }
+                if (opts.n_predict >= 0) {
+                    --remaining;
+                    if (remaining <= 0) {
+                        stop = true;
+                        break;
+                    }
+                }
+                if (gptoss_vocab_is_eog(vocab, tok)) {
+                    stop = true;
+                    break;
+                }
+            }
+
+            if (opts.spec_min_accept > 0.0f) {
+                if (!force_baseline && smetrics.steps >= 16 && smetrics.ewma_accept < opts.spec_min_accept) {
+                    force_baseline = true;
+                    if (opts.spec_debug) {
+                        std::cerr << "[spec] acceptance below threshold; using single-token verification\n";
+                    }
+                } else if (force_baseline && smetrics.ewma_accept > opts.spec_min_accept * (1.0f + hysteresis)) {
+                    force_baseline = false;
+                    if (opts.spec_debug) {
+                        std::cerr << "[spec] acceptance recovered; restoring proposals\n";
+                    }
+                }
+            }
+
+            if (stop) {
+                break;
+            }
         }
 
-        std::memcpy(logits_buffer.data(), logits_raw, static_cast<size_t>(vocab_size) * sizeof(float));
+        if (!success) {
+            if (stream_tokens) {
+                std::cout << std::endl;
+            }
+            metrics.generated_tokens = generated_tokens;
+            metrics.elapsed_seconds = 0.0;
+            metrics.decode_ms = 0.0;
+            gptoss_free(ctx);
+            gptoss_free(draft_ctx);
+            gptoss_model_free(draft_model);
+            return false;
+        }
 
-        if (repeat_window > 0 && opts.repeat_penalty > 1.0f && !recent_tokens.empty()) {
-            for (const gptoss_token token : recent_tokens) {
-                if (token < 0 || token >= vocab_size) {
-                    continue;
+        metrics.spec_steps = smetrics.steps;
+        metrics.spec_proposed = smetrics.proposed;
+        metrics.spec_accepted = smetrics.accepted;
+        metrics.spec_ewma = smetrics.ewma_accept;
+    } else {
+        std::vector<float> logits_buffer(static_cast<size_t>(vocab_size));
+        std::vector<int> candidates;
+        candidates.reserve(static_cast<size_t>(vocab_size));
+
+        while (remaining-- > 0) {
+            float * logits_raw = gptoss_get_logits(ctx);
+            if (!logits_raw) {
+                success = false;
+                break;
+            }
+
+            std::memcpy(logits_buffer.data(), logits_raw, static_cast<size_t>(vocab_size) * sizeof(float));
+
+            if (repeat_window > 0 && opts.repeat_penalty > 1.0f && !recent_tokens.empty()) {
+                for (const gptoss_token token : recent_tokens) {
+                    if (token < 0 || token >= vocab_size) {
+                        continue;
+                    }
+                    float & logit = logits_buffer[static_cast<size_t>(token)];
+                    if (logit > 0.0f) {
+                        logit /= opts.repeat_penalty;
+                    } else {
+                        logit *= opts.repeat_penalty;
+                    }
                 }
-                float & logit = logits_buffer[static_cast<size_t>(token)];
-                if (logit > 0.0f) {
-                    logit /= opts.repeat_penalty;
+            }
+
+            gptoss_token next = gptoss_vocab_eos(vocab);
+
+            if (opts.temperature <= 0.0f) {
+                float best_value = logits_buffer[0];
+                int best_index = 0;
+                for (int i = 1; i < vocab_size; ++i) {
+                    const float value = logits_buffer[static_cast<size_t>(i)];
+                    if (value > best_value) {
+                        best_value = value;
+                        best_index = i;
+                    }
+                }
+                next = static_cast<gptoss_token>(best_index);
+            } else {
+                candidates.clear();
+                const int effective_top_k = (opts.top_k > 0 && opts.top_k < vocab_size) ? opts.top_k : vocab_size;
+                candidates.reserve(static_cast<size_t>(effective_top_k));
+
+                if (effective_top_k < vocab_size) {
+                    std::vector<int> indices(static_cast<size_t>(vocab_size));
+                    std::iota(indices.begin(), indices.end(), 0);
+                    std::nth_element(
+                        indices.begin(),
+                        indices.begin() + effective_top_k,
+                        indices.end(),
+                        [&](int a, int b) {
+                            return logits_buffer[static_cast<size_t>(a)] > logits_buffer[static_cast<size_t>(b)];
+                        });
+                    indices.resize(static_cast<size_t>(effective_top_k));
+                    candidates = std::move(indices);
                 } else {
-                    logit *= opts.repeat_penalty;
+                    candidates.resize(static_cast<size_t>(vocab_size));
+                    std::iota(candidates.begin(), candidates.end(), 0);
                 }
-            }
-        }
 
-        gptoss_token next = gptoss_vocab_eos(vocab);
+                std::sort(candidates.begin(), candidates.end(), [&](int a, int b) {
+                    return logits_buffer[static_cast<size_t>(a)] > logits_buffer[static_cast<size_t>(b)];
+                });
 
-        if (opts.temperature <= 0.0f) {
-            float best_value = logits_buffer[0];
-            int best_index = 0;
-            for (int i = 1; i < vocab_size; ++i) {
-                const float value = logits_buffer[static_cast<size_t>(i)];
-                if (value > best_value) {
-                    best_value = value;
-                    best_index = i;
+                const float inv_temp = 1.0f / opts.temperature;
+                std::vector<float> probabilities;
+                probabilities.reserve(candidates.size());
+
+                float max_logit = logits_buffer[static_cast<size_t>(candidates.front())];
+                float normalizer = 0.0f;
+                for (int idx : candidates) {
+                    float prob = std::exp((logits_buffer[static_cast<size_t>(idx)] - max_logit) * inv_temp);
+                    probabilities.push_back(prob);
+                    normalizer += prob;
                 }
-            }
-            next = static_cast<gptoss_token>(best_index);
-        } else {
-            candidates.clear();
-            const int effective_top_k = (opts.top_k > 0 && opts.top_k < vocab_size) ? opts.top_k : vocab_size;
-            candidates.reserve(static_cast<size_t>(effective_top_k));
 
-            if (effective_top_k < vocab_size) {
-                std::vector<int> indices(static_cast<size_t>(vocab_size));
-                std::iota(indices.begin(), indices.end(), 0);
-                std::nth_element(
-                    indices.begin(),
-                    indices.begin() + effective_top_k,
-                    indices.end(),
-                    [&](int a, int b) {
-                        return logits_buffer[static_cast<size_t>(a)] > logits_buffer[static_cast<size_t>(b)];
-                    });
-                indices.resize(static_cast<size_t>(effective_top_k));
-                candidates = std::move(indices);
-            } else {
-                candidates.resize(static_cast<size_t>(vocab_size));
-                std::iota(candidates.begin(), candidates.end(), 0);
-            }
+                if (normalizer <= 0.0f) {
+                    next = static_cast<gptoss_token>(candidates.front());
+                } else {
+                    float cutoff = opts.top_p >= 1.0f ? std::numeric_limits<float>::infinity() : opts.top_p;
+                    float cumulative = 0.0f;
+                    std::vector<std::pair<int, float>> filtered;
+                    filtered.reserve(probabilities.size());
 
-            std::sort(candidates.begin(), candidates.end(), [&](int a, int b) {
-                return logits_buffer[static_cast<size_t>(a)] > logits_buffer[static_cast<size_t>(b)];
-            });
-
-            const float inv_temp = 1.0f / opts.temperature;
-            std::vector<float> probabilities;
-            probabilities.reserve(candidates.size());
-
-            float max_logit = logits_buffer[static_cast<size_t>(candidates.front())];
-            float normalizer = 0.0f;
-            for (int idx : candidates) {
-                float prob = std::exp((logits_buffer[static_cast<size_t>(idx)] - max_logit) * inv_temp);
-                probabilities.push_back(prob);
-                normalizer += prob;
-            }
-
-            if (normalizer <= 0.0f) {
-                next = static_cast<gptoss_token>(candidates.front());
-            } else {
-                float cutoff = opts.top_p >= 1.0f ? std::numeric_limits<float>::infinity() : opts.top_p;
-                float cumulative = 0.0f;
-                std::vector<std::pair<int, float>> filtered;
-                filtered.reserve(probabilities.size());
-
-                for (size_t i = 0; i < probabilities.size(); ++i) {
-                    float prob = probabilities[i] / normalizer;
-                    cumulative += prob;
-                    filtered.emplace_back(candidates[i], prob);
-                    if (cumulative >= cutoff) {
-                        break;
+                    for (size_t i = 0; i < probabilities.size(); ++i) {
+                        float prob = probabilities[i] / normalizer;
+                        cumulative += prob;
+                        filtered.emplace_back(candidates[i], prob);
+                        if (cumulative >= cutoff) {
+                            break;
+                        }
                     }
-                }
 
-                float draw = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
-                float running = 0.0f;
-                for (const auto & entry : filtered) {
-                    running += entry.second;
-                    if (draw <= running || &entry == &filtered.back()) {
-                        next = static_cast<gptoss_token>(entry.first);
-                        break;
+                    float draw = std::uniform_real_distribution<float>(0.0f, 1.0f)(rng);
+                    float running = 0.0f;
+                    for (const auto & entry : filtered) {
+                        running += entry.second;
+                        if (draw <= running || &entry == &filtered.back()) {
+                            next = static_cast<gptoss_token>(entry.first);
+                            break;
+                        }
                     }
                 }
             }
-        }
 
-        if (gptoss_vocab_is_eog(vocab, next)) {
-            break;
-        }
-
-        if (stream_tokens) {
-            std::cout << token_to_string(vocab, next);
-            std::cout.flush();
-        }
-
-        ++generated_tokens;
-
-        if (repeat_window > 0) {
-            if (recent_tokens.size() == repeat_window) {
-                recent_tokens.pop_front();
+            if (gptoss_vocab_is_eog(vocab, next)) {
+                break;
             }
-            recent_tokens.push_back(next);
-        }
 
-        gptoss_batch batch = gptoss_batch_get_one(&next, 1);
-        const int32_t rc = gptoss_decode(ctx, batch);
-        if (rc != 0) {
-            std::cerr << "\nGeneration failed with code " << rc << "\n";
-            break;
+            if (stream_tokens) {
+                std::cout << token_to_string(vocab, next);
+                std::cout.flush();
+            }
+
+            ++generated_tokens;
+
+            if (repeat_window > 0) {
+                if (recent_tokens.size() == repeat_window) {
+                    recent_tokens.pop_front();
+                }
+                recent_tokens.push_back(next);
+            }
+
+            gptoss_batch batch = gptoss_batch_get_one(&next, 1);
+            const int32_t rc = gptoss_decode(ctx, batch);
+            if (rc != 0) {
+                std::cerr << "\nGeneration failed with code " << rc << "\n";
+                success = false;
+                break;
+            }
         }
     }
 
@@ -615,7 +871,14 @@ bool run_generation(const options & opts, gptoss_model * model, const std::strin
     metrics.decode_ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(end_time - decode_start).count();
 
     gptoss_free(ctx);
-    return true;
+    if (draft_ctx) {
+        gptoss_free(draft_ctx);
+    }
+    if (draft_model) {
+        gptoss_model_free(draft_model);
+    }
+
+    return success;
 }
 
 bool run_measurement(const options & opts, gptoss_model * model) {
@@ -753,6 +1016,16 @@ int main(int argc, char ** argv) {
                        << "BENCH,P_MS=" << metrics.prefill_ms
                        << ",D_MS=" << metrics.decode_ms
                        << ",TOK=" << metrics.generated_tokens;
+            if (!opts.spec_draft_model.empty()) {
+                const double acc_ratio = metrics.spec_proposed > 0
+                    ? static_cast<double>(metrics.spec_accepted) / static_cast<double>(metrics.spec_proposed)
+                    : 0.0;
+                bench_line << std::setprecision(0)
+                           << ",SD_L=" << opts.spec_max_propose;
+                bench_line << std::setprecision(3)
+                           << ",SD_ACC=" << acc_ratio
+                           << ",SD_EWMA=" << metrics.spec_ewma;
+            }
             std::cout << bench_line.str() << std::endl;
         }
     }
