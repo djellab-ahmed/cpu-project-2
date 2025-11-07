@@ -3,8 +3,9 @@
 #include "gptoss-batch.h"
 #include "gptoss-graph.h"
 #include "gptoss-kv-cells.h"
-#include "gptoss-memory.h"
 #include "gptoss-kv-layout.h"
+#include "gptoss-memory.h"
+#include "ggml.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -211,6 +212,9 @@ public:
 private:
     const gptoss_model & model;
     const gptoss_hparams & hparams;
+
+    ggml_type type_k_src = GGML_TYPE_F32;
+    ggml_type type_v_src = GGML_TYPE_F32;
 
     struct kv_layer {
         // layer index in the model
