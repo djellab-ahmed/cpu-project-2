@@ -510,6 +510,8 @@ struct gptoss_model {
 private:
     struct impl;
     std::unique_ptr<impl> pimpl;
+
+    void build_fused_qkv_weights();
 };
 
 const char * llm_type_name(llm_type type);
