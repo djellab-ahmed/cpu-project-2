@@ -125,6 +125,152 @@ static inline float dot_q_k_f32(const float * GGML_RESTRICT q, const float * GGM
 #endif
 }
 
+static inline size_t kv_token_head_offset(const struct gptoss_kv_view * view, int64_t stream, int64_t token, int64_t head) {
+    size_t off = (size_t) token * view->stride_token_bytes + (size_t) head * view->stride_head_bytes;
+    if (view->stride_stream_bytes != 0) {
+        off += (size_t) stream * view->stride_stream_bytes;
+    }
+    return off;
+}
+
+static void ggml_compute_forward_flash_attn_decode_cpu_q8_rowrow_scalar(
+        const struct ggml_compute_params * params,
+        struct ggml_tensor * dst,
+        const struct gptoss_kv_view * kv_view) {
+    struct ggml_tensor * q = dst->src[0];
+    struct ggml_tensor * k = dst->src[1];
+
+    float scale = 1.0f;
+    memcpy(&scale, &dst->op_params[0], sizeof(float));
+
+    const int64_t head_dim  = q->ne[0];
+    const int64_t n_head    = q->ne[1];
+    const int64_t n_batch   = q->ne[2];
+    const int64_t n_stream  = q->ne[3] > 0 ? q->ne[3] : 1;
+    const int64_t n_head_kv = k->ne[1];
+    const int64_t n_kv      = k->ne[2];
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    const enum ggml_type q_type = q->type;
+
+    GGML_ASSERT(q->ne[0] == kv_view->head_dim);
+    GGML_ASSERT(kv_view->n_heads_kv == n_head_kv);
+    GGML_ASSERT(n_batch == 1);
+    GGML_ASSERT(n_stream == k->ne[3]);
+    GGML_ASSERT(n_head % n_head_kv == 0);
+    GGML_ASSERT(kv_view->interleaved);
+
+    GGML_ASSERT(q->nb[0] == ggml_type_size(q_type));
+    GGML_ASSERT(dst->nb[0] == sizeof(float));
+
+    const size_t q_nb1 = q->nb[1];
+    const size_t q_nb2 = q->nb[2];
+    const size_t q_nb3 = q->nb[3];
+
+    const size_t y_nb1 = dst->nb[1];
+    const size_t y_nb2 = dst->nb[2];
+    const size_t y_nb3 = dst->nb[3];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t tasks = n_stream * n_batch * n_head;
+    const int64_t task0 = (tasks * ith) / nth;
+    const int64_t task1 = (tasks * (ith + 1)) / nth;
+    if (task0 >= task1) {
+        return;
+    }
+
+    const bool need_q_tmp = q_type != GGML_TYPE_F32;
+    if (need_q_tmp) {
+        ensure_tls_buffer(&tls_q_buf, &tls_q_cap, (size_t) head_dim);
+    }
+
+    int tile_tok = 0;
+    memcpy(&tile_tok, &dst->op_params[4], sizeof(int));
+    if (tile_tok < 32 || tile_tok > 2048) {
+        tile_tok = 256;
+    }
+    const char * tile_env = getenv("GPTOSS_FLASH_TILE");
+    if (tile_env) {
+        int tmp = atoi(tile_env);
+        if (tmp >= 32 && tmp <= 2048) {
+            tile_tok = tmp;
+        }
+    }
+
+    const int64_t head_ratio = n_head / n_head_kv;
+
+    for (int64_t idx = task0; idx < task1; ++idx) {
+        int64_t rem = idx;
+        const int64_t stream = rem / (n_batch * n_head);
+        rem -= stream * (n_batch * n_head);
+        const int64_t batch  = rem / n_head;
+        const int64_t head   = rem - batch * n_head;
+
+        const int64_t kv_head = head / head_ratio;
+
+        const char * q_ptr_raw = (const char *) q->data
+                                 + head * q_nb1 + batch * q_nb2 + stream * q_nb3;
+        const float * q_vec = NULL;
+        if (q_type == GGML_TYPE_F32) {
+            q_vec = (const float *) q_ptr_raw;
+        } else {
+            load_row_to_f32(q_ptr_raw, q_type, tls_q_buf, head_dim);
+            q_vec = tls_q_buf;
+        }
+
+        float * y_ptr = (float *) ((char *) dst->data
+                         + head * y_nb1 + batch * y_nb2 + stream * y_nb3);
+        memset(y_ptr, 0, (size_t) head_dim * sizeof(float));
+
+        float m = -INFINITY;
+        float l = 0.0f;
+
+        for (int64_t t0 = 0; t0 < n_kv; t0 += tile_tok) {
+            const int64_t tile_n = (t0 + tile_tok <= n_kv) ? tile_tok : (n_kv - t0);
+
+            for (int64_t ti = 0; ti < tile_n; ++ti) {
+                const int64_t t = t0 + ti;
+
+                size_t off = kv_token_head_offset(kv_view, stream, t, kv_head);
+                const int8_t * Kq8 = (const int8_t *) (kv_view->base + off);
+                const int8_t * Vq8 = Kq8 + head_dim;
+                const ggml_fp16_t * sK_ptr = (const ggml_fp16_t *) (kv_view->base + off + 2 * (size_t) head_dim);
+                const ggml_fp16_t * sV_ptr = sK_ptr + 1;
+
+                const float sK = ggml_fp16_to_fp32(*sK_ptr);
+                const float sV = ggml_fp16_to_fp32(*sV_ptr);
+
+                float sum = 0.0f;
+                for (int64_t d = 0; d < head_dim; ++d) {
+                    sum += q_vec[d] * ((float) Kq8[d] * sK);
+                }
+                const float s = sum * scale;
+
+                const float m_new = fmaxf(m, s);
+                const float alpha = isfinite(m) ? expf(m - m_new) : 0.0f;
+                const float beta  = expf(s - m_new);
+
+                for (int64_t d = 0; d < head_dim; ++d) {
+                    const float v_val = (float) Vq8[d] * sV;
+                    y_ptr[d] = alpha * y_ptr[d] + beta * v_val;
+                }
+
+                l = alpha * l + beta;
+                m = m_new;
+            }
+        }
+
+        if (l > 0.0f) {
+            const float inv_l = 1.0f / l;
+            for (int64_t i = 0; i < head_dim; ++i) {
+                y_ptr[i] *= inv_l;
+            }
+        }
+    }
+}
+
 static void ggml_compute_forward_flash_attn_decode_cpu_fp16(
         const struct ggml_compute_params * params,
         struct ggml_tensor * dst) {
@@ -363,8 +509,7 @@ void ggml_compute_forward_flash_attn_decode_cpu(
         kv_dtype == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_k == GPTOSS_KV_Q8_ROWROW &&
         kv_view->dtype_v == GPTOSS_KV_Q8_ROWROW) {
-        // Placeholder: dispatch to FP16 path until INT8 kernels are implemented.
-        ggml_compute_forward_flash_attn_decode_cpu_fp16(params, dst);
+        ggml_compute_forward_flash_attn_decode_cpu_q8_rowrow_scalar(params, dst, kv_view);
         return;
     }
 

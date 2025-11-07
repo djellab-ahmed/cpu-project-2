@@ -5,6 +5,7 @@
 #include "gptoss-model.h"
 #include "gptoss-context.h"
 #include "ggml.h"
+#include "quant-util.h"
 
 #include <algorithm>
 #include <cassert>
@@ -88,6 +89,37 @@ static void * kv_mmap_alloc(size_t bytes, bool &huge_ok, const char *hp_mode) {
     (void)hp_mode;
     return ggml_aligned_malloc(bytes);
 #endif
+}
+
+static void kv_append_q8_rowrow(const float * K_f32, const float * V_f32,
+                                uint8_t * base, size_t off_bytes, int hd) {
+    int8_t   * Kq8 = reinterpret_cast<int8_t *>(base + off_bytes);
+    int8_t   * Vq8 = reinterpret_cast<int8_t *>(base + off_bytes + hd);
+    uint16_t * sK  = reinterpret_cast<uint16_t *>(base + off_bytes + 2 * static_cast<size_t>(hd));
+    uint16_t * sV  = sK + 1;
+
+    const float sKf = safe_scale(max_abs(K_f32, hd));
+    const float sVf = safe_scale(max_abs(V_f32, hd));
+
+    for (int d = 0; d < hd; ++d) {
+        int qk = std::lrintf(K_f32[d] / sKf);
+        if (qk < -127) {
+            qk = -127;
+        } else if (qk > 127) {
+            qk = 127;
+        }
+        int qv = std::lrintf(V_f32[d] / sVf);
+        if (qv < -127) {
+            qv = -127;
+        } else if (qv > 127) {
+            qv = 127;
+        }
+        Kq8[d] = static_cast<int8_t>(qk);
+        Vq8[d] = static_cast<int8_t>(qv);
+    }
+
+    *sK = ggml_fp32_to_fp16(sKf);
+    *sV = ggml_fp32_to_fp16(sVf);
 }
 
 //
@@ -2167,13 +2199,28 @@ void gptoss_kv_cache::append_token(int stream_idx, const void * k_src, const voi
     uint8_t * base_stream = view.base + static_cast<size_t>(stream_idx) * view.stride_stream_bytes;
     uint8_t * token_ptr   = base_stream + static_cast<size_t>(cur_tokens) * view.stride_token_bytes;
     size_t head_span = static_cast<size_t>(view.n_heads_kv) * view.block_bytes;
-    for (int h = 0; h < view.n_heads_kv; ++h) {
-        size_t head_off = static_cast<size_t>(h) * view.block_bytes;
-        uint8_t * k_dst = token_ptr + head_off;
-        uint8_t * v_dst = view.interleaved ? (k_dst + view.block_bytes)
-                                          : (token_ptr + head_span + head_off);
-        std::memcpy(k_dst, static_cast<const uint8_t *>(k_src) + head_off, view.block_bytes);
-        std::memcpy(v_dst, static_cast<const uint8_t *>(v_src) + head_off, view.block_bytes);
+
+    if (dtype_size == 1) {
+        GGML_ASSERT(view.dtype_k == GPTOSS_KV_Q8_ROWROW && view.dtype_v == GPTOSS_KV_Q8_ROWROW);
+        const float * k_rows = static_cast<const float *>(k_src);
+        const float * v_rows = static_cast<const float *>(v_src);
+
+        for (int h = 0; h < view.n_heads_kv; ++h) {
+            const size_t head_off = static_cast<size_t>(h) * view.stride_head_bytes;
+            const float * k_row = k_rows + static_cast<size_t>(h) * view.head_dim;
+            const float * v_row = v_rows + static_cast<size_t>(h) * view.head_dim;
+            kv_append_q8_rowrow(k_row, v_row, token_ptr, head_off, view.head_dim);
+        }
+    } else {
+        for (int h = 0; h < view.n_heads_kv; ++h) {
+            const size_t head_off = static_cast<size_t>(h) * view.stride_head_bytes;
+            uint8_t * k_dst = token_ptr + head_off;
+            uint8_t * v_dst = view.interleaved ? (k_dst + view.block_bytes)
+                                              : (token_ptr + head_span + static_cast<size_t>(h) * view.block_bytes);
+            const size_t src_off = static_cast<size_t>(h) * view.block_bytes;
+            std::memcpy(k_dst, static_cast<const uint8_t *>(k_src) + src_off, view.block_bytes);
+            std::memcpy(v_dst, static_cast<const uint8_t *>(v_src) + src_off, view.block_bytes);
+        }
     }
     ++cur_tokens;
 }
