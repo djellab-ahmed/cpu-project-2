@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 //
 // gptoss_context
@@ -102,6 +103,19 @@ gptoss_context::gptoss_context(
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
+
+    if (params.kv_cache_q8) {
+        if (std::strcmp(params.kv_cache_q8_scheme, "row,row") != 0) {
+            throw std::runtime_error(std::string("unsupported KV Q8 scheme: ") + params.kv_cache_q8_scheme);
+        }
+        cparams.kv_q8      = true;
+        cparams.kv_dtype_k = GPTOSS_KV_Q8_ROWROW;
+        cparams.kv_dtype_v = GPTOSS_KV_Q8_ROWROW;
+    } else {
+        cparams.kv_q8      = false;
+        cparams.kv_dtype_k = GPTOSS_KV_F16;
+        cparams.kv_dtype_v = GPTOSS_KV_F16;
+    }
 
     {
         const char * GPTOSS_GRAPH_REUSE_DISABLE = getenv("GPTOSS_GRAPH_REUSE_DISABLE");
@@ -2289,12 +2303,14 @@ gptoss_context_params gptoss_context_default_params() {
         /*.type_v                      =*/ GGML_TYPE_F16,
         /*.abort_callback              =*/ nullptr,
         /*.abort_callback_data         =*/ nullptr,
+        /*.kv_cache_q8_scheme          =*/ "row,row",
         /*.embeddings                  =*/ false,
         /*.offload_kqv                 =*/ true,
         /*.no_perf                     =*/ true,
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.kv_cache_q8                 =*/ false,
     };
 
     return result;

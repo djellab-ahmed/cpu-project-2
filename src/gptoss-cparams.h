@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+enum gptoss_kv_dtype : uint8_t;
+
 #define GPTOSS_MAX_SEQ 256
 
 struct gptoss_cparams {
@@ -25,6 +27,9 @@ struct gptoss_cparams {
     float yarn_beta_fast;
     float yarn_beta_slow;
 
+    gptoss_kv_dtype kv_dtype_k;
+    gptoss_kv_dtype kv_dtype_v;
+
     bool embeddings;
     bool causal_attn;
     bool offload_kqv;
@@ -33,6 +38,7 @@ struct gptoss_cparams {
     bool warmup;
     bool op_offload;
     bool kv_unified;
+    bool kv_q8;
 
     enum gptoss_pooling_type pooling_type;
 

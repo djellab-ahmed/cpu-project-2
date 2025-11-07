@@ -4,6 +4,7 @@
 #include "gptoss-cparams.h"
 #include "gptoss-graph.h"
 #include "gptoss-adapter.h"
+#include "gptoss-kv-view.h"
 
 #include "ggml-cpp.h"
 #include "ggml-opt.h"

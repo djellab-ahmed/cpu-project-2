@@ -336,6 +336,8 @@ extern "C" {
         ggml_abort_callback abort_callback;
         void *              abort_callback_data;
 
+        char kv_cache_q8_scheme[16];
+
         // Keep the booleans together and at the end of the struct to avoid misalignment during copy-by-value.
         bool embeddings;  // if true, extract embeddings (together with logits)
         bool offload_kqv; // offload the KQV ops (including the KV cache) to GPU
@@ -347,6 +349,7 @@ extern "C" {
         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/gptoss.cpp/pull/14363
+        bool kv_cache_q8; // enable experimental INT8 KV cache layout
     };
 
     // model quantization parameters

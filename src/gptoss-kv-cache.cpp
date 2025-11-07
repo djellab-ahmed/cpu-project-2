@@ -2102,9 +2102,13 @@ bool gptoss_kv_cache::init_interleaved(int n_stream,
                                        bool interleave,
                                        const char * hp_mode) {
     dtype_size       = dtype_sz;
-    view.head_dim    = head_dim;
-    view.n_head_kv   = n_head_kv;
+    view.dtype_k     = (dtype_sz == 1) ? GPTOSS_KV_Q8_ROWROW : GPTOSS_KV_F16;
+    view.dtype_v     = view.dtype_k;
+    view.head_dim    = static_cast<int>(head_dim);
+    view.n_heads_kv  = n_head_kv;
     view.block_bytes = static_cast<size_t>(head_dim) * dtype_sz;
+    view.scales_k    = nullptr;
+    view.scales_v    = nullptr;
 
     int pad = tile_pad > 0 ? tile_pad : gptoss_kv_default_tile_pad();
     if (pad < 32) { pad = 32; }
@@ -2113,27 +2117,31 @@ bool gptoss_kv_cache::init_interleaved(int n_stream,
     while (pow2 < pad) {
         pow2 <<= 1;
     }
-    view.tile_pad    = pow2;
+    view.tile_tokens = pow2;
     view.interleaved = interleave ? 1 : 0;
 
     size_t head_stride = view.block_bytes;
     size_t token_stride = static_cast<size_t>(n_head_kv) * view.block_bytes;
     if (interleave) {
-        head_stride  = 2 * view.block_bytes;
+        if (view.dtype_k == GPTOSS_KV_Q8_ROWROW) {
+            head_stride = 2 * view.block_bytes + 2 * sizeof(uint16_t);
+        } else {
+            head_stride = 2 * view.block_bytes;
+        }
         token_stride = static_cast<size_t>(n_head_kv) * head_stride;
     } else {
         token_stride *= 2;
     }
-    view.stride_head  = head_stride;
-    view.stride_token = token_stride;
-    view.stride_stream = 0;
+    view.stride_head_bytes   = head_stride;
+    view.stride_token_bytes  = token_stride;
+    view.stride_stream_bytes = 0;
 
     cur_tokens = 0;
-    cap_tokens = cap_toks > 0 ? cap_toks : static_cast<int64_t>(view.tile_pad);
-    int64_t mask = static_cast<int64_t>(view.tile_pad) - 1;
+    cap_tokens = cap_toks > 0 ? cap_toks : static_cast<int64_t>(view.tile_tokens);
+    int64_t mask = static_cast<int64_t>(view.tile_tokens) - 1;
     cap_tokens = (cap_tokens + mask) & ~mask;
 
-    size_t bytes = static_cast<size_t>(n_stream) * static_cast<size_t>(cap_tokens) * view.stride_token;
+    size_t bytes = static_cast<size_t>(n_stream) * static_cast<size_t>(cap_tokens) * view.stride_token_bytes;
     bool huge_ok = false;
     view.base = static_cast<uint8_t *>(kv_mmap_alloc(bytes, huge_ok, hp_mode));
     if (!view.base) {
@@ -2143,7 +2151,12 @@ bool gptoss_kv_cache::init_interleaved(int n_stream,
     view.huge_pages = huge_ok ? 1 : 0;
 #endif
     std::memset(view.base, 0, bytes);
-    view.stride_stream = static_cast<size_t>(cap_tokens) * view.stride_token;
+    view.stride_stream_bytes = static_cast<size_t>(cap_tokens) * view.stride_token_bytes;
+
+    if (view.dtype_k == GPTOSS_KV_Q8_ROWROW) {
+        view.scales_k = view.base + 2 * view.block_bytes;
+        view.scales_v = view.scales_k + sizeof(uint16_t);
+    }
     return true;
 }
 
@@ -2151,10 +2164,10 @@ void gptoss_kv_cache::append_token(int stream_idx, const void * k_src, const voi
     GGML_ASSERT(view.base && "KV view not initialized");
     GGML_ASSERT(cur_tokens < cap_tokens && "KV capacity exceeded; allocate >= n_ctx_per_seq");
 
-    uint8_t * base_stream = view.base + static_cast<size_t>(stream_idx) * view.stride_stream;
-    uint8_t * token_ptr   = base_stream + static_cast<size_t>(cur_tokens) * view.stride_token;
-    size_t head_span = static_cast<size_t>(view.n_head_kv) * view.block_bytes;
-    for (int h = 0; h < view.n_head_kv; ++h) {
+    uint8_t * base_stream = view.base + static_cast<size_t>(stream_idx) * view.stride_stream_bytes;
+    uint8_t * token_ptr   = base_stream + static_cast<size_t>(cur_tokens) * view.stride_token_bytes;
+    size_t head_span = static_cast<size_t>(view.n_heads_kv) * view.block_bytes;
+    for (int h = 0; h < view.n_heads_kv; ++h) {
         size_t head_off = static_cast<size_t>(h) * view.block_bytes;
         uint8_t * k_dst = token_ptr + head_off;
         uint8_t * v_dst = view.interleaved ? (k_dst + view.block_bytes)
@@ -2171,18 +2184,18 @@ static ggml_tensor * make_kv_view(ggml_context * ctx,
                                   int n_stream,
                                   int n_kv,
                                   ggml_type dtype) {
-    int64_t ne[4] = { view.head_dim, view.n_head_kv, n_kv, n_stream };
+    int64_t ne[4] = { view.head_dim, view.n_heads_kv, n_kv, n_stream };
     ggml_tensor * t = ggml_new_tensor(ctx, dtype, 4, ne);
     size_t base_offset = 0;
     if (is_v) {
         base_offset = view.interleaved ? view.block_bytes
-                                       : static_cast<size_t>(view.n_head_kv) * view.block_bytes;
+                                       : static_cast<size_t>(view.n_heads_kv) * view.block_bytes;
     }
     t->data = view.base ? view.base + base_offset : nullptr;
     t->nb[0] = ggml_type_size(dtype);
-    t->nb[1] = view.stride_head;
-    t->nb[2] = view.stride_token;
-    t->nb[3] = view.stride_stream;
+    t->nb[1] = view.stride_head_bytes;
+    t->nb[2] = view.stride_token_bytes;
+    t->nb[3] = view.stride_stream_bytes;
     return t;
 }
 

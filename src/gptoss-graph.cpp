@@ -1413,20 +1413,29 @@ ggml_tensor * llm_graph_context::build_attn_mha(
                 }
             }
 
+            int kv_dtype_attr = GPTOSS_KV_F16;
+            void * kv_extra = nullptr;
+
             if (kv_cache_ptr) {
                 const gptoss_kv_view & kv_view = kv_cache_ptr->get_view();
                 if (kv_view.interleaved) {
-                    tile_tok = kv_view.tile_pad;
+                    tile_tok = kv_view.tile_tokens;
                     const int n_stream_flash = q->ne[3] > 0 ? static_cast<int>(q->ne[3]) : 1;
                     ggml_tensor * k_it = kv_cache_ptr->as_k_ggml(ctx0, n_stream_flash, static_cast<int>(k->ne[2]));
                     ggml_tensor * v_it = kv_cache_ptr->as_v_ggml(ctx0, n_stream_flash, static_cast<int>(v->ne[2]));
                     cur = ggml_flash_attn_decode_ex(ctx0, q, k_it, v_it, kq_scale, tile_tok);
+                    if (cparams.kv_q8) {
+                        kv_dtype_attr = kv_view.dtype_k;
+                        kv_extra = const_cast<gptoss_kv_view *>(&kv_view);
+                    }
                 } else {
                     cur = ggml_flash_attn_decode_ex(ctx0, q, k_use, v_use, kq_scale, tile_tok);
                 }
             } else {
                 cur = ggml_flash_attn_decode_ex(ctx0, q, k_use, v_use, kq_scale, tile_tok);
             }
+            cur->op_params[2] = kv_dtype_attr;
+            cur->extra = kv_extra;
             cb(cur, GPTOSS_TENSOR_NAME_FATTN, il);
         } else {
             cur = ggml_flash_attn_ext(ctx0, q, k_use, v_use, kq_mask, kq_scale, hparams.f_max_alibi_bias,
