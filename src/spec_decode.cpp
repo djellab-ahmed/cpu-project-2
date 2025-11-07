@@ -188,6 +188,32 @@ void build_adjusted_probs(
     }
 }
 
+void enforce_greedy_delta(
+        std::vector<float> & probs,
+        std::vector<int> & order) {
+    if (probs.empty()) {
+        return;
+    }
+
+    int best = -1;
+    if (!order.empty()) {
+        best = order.front();
+    } else {
+        auto it = std::max_element(probs.begin(), probs.end());
+        if (it != probs.end()) {
+            best = static_cast<int>(std::distance(probs.begin(), it));
+        }
+    }
+
+    if (best < 0 || best >= static_cast<int>(probs.size())) {
+        return;
+    }
+
+    std::fill(probs.begin(), probs.end(), 0.0f);
+    probs[static_cast<size_t>(best)] = 1.0f;
+    order.assign(1, best);
+}
+
 gptoss_token sample_from_probs(
         const std::vector<float> & probs,
         const std::vector<int> & order,
@@ -284,6 +310,10 @@ int spec_step(
                 sx.q_next,
                 sx.candidate_order,
                 sx.candidate_scratch);
+
+        if (cfg.greedy_draft) {
+            enforce_greedy_delta(sx.q_next, sx.candidate_order);
+        }
 
         if (sx.candidate_order.empty()) {
             break;
@@ -484,6 +514,10 @@ int spec_step(
                     sx.q_next,
                     sx.candidate_order,
                     sx.candidate_scratch);
+
+            if (cfg.greedy_draft) {
+                enforce_greedy_delta(sx.q_next, sx.candidate_order);
+            }
         } else {
             std::fill(sx.q_next.begin(), sx.q_next.end(), 0.0f);
         }
@@ -503,20 +537,31 @@ int spec_step(
             for (int i = 0; i < vocab_size; ++i) {
                 sx.p_next[static_cast<size_t>(i)] = sx.q_next[static_cast<size_t>(i)] / diff_sum;
             }
-            size_t write = 0;
-            for (int idx : sx.candidate_order) {
-                if (idx >= 0 && idx < vocab_size && sx.q_next[static_cast<size_t>(idx)] > 0.0f) {
-                    sx.candidate_order[write++] = idx;
+            sx.candidate_order.clear();
+            for (int i = 0; i < vocab_size; ++i) {
+                if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
+                    sx.candidate_order.push_back(i);
                 }
             }
-            sx.candidate_order.resize(write);
-            if (sx.candidate_order.empty()) {
-                for (int i = 0; i < vocab_size; ++i) {
-                    if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
-                        sx.candidate_order.push_back(i);
-                    }
+            std::sort(
+                    sx.candidate_order.begin(),
+                    sx.candidate_order.end(),
+                    [&](int a, int b) {
+                        return sx.p_next[static_cast<size_t>(a)] > sx.p_next[static_cast<size_t>(b)];
+                    });
+        } else {
+            sx.candidate_order.clear();
+            for (int i = 0; i < vocab_size; ++i) {
+                if (sx.p_next[static_cast<size_t>(i)] > 0.0f) {
+                    sx.candidate_order.push_back(i);
                 }
             }
+            std::sort(
+                    sx.candidate_order.begin(),
+                    sx.candidate_order.end(),
+                    [&](int a, int b) {
+                        return sx.p_next[static_cast<size_t>(a)] > sx.p_next[static_cast<size_t>(b)];
+                    });
         }
     }
 
