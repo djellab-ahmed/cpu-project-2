@@ -2328,8 +2328,16 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
         case GGML_OP_QKV_MV_ROPE:
         case GGML_OP_ROPE_BACK:
         case GGML_OP_ADD_REL_POS:
+        case GGML_OP_QKV_MV_ROPE:
             {
-                n_tasks = n_threads;
+                if (node->op == GGML_OP_QKV_MV_ROPE) {
+                    const struct ggml_qkv_mv_rope_params * p =
+                        (const struct ggml_qkv_mv_rope_params *) node->op_params;
+                    const int n_head = p ? p->n_head : 1;
+                    n_tasks = MIN(n_threads, n_head);
+                } else {
+                    n_tasks = n_threads;
+                }
             } break;
         case GGML_OP_QKV_MV_ROPE:
             {
