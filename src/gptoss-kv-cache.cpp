@@ -40,6 +40,22 @@ static size_t round_up(size_t x, size_t a) {
     return (x + a - 1) & ~(a - 1);
 }
 
+static inline void load_row_to_f32(const void * src, ggml_type type, float * dst, int n) {
+    switch (type) {
+        case GGML_TYPE_F32:
+            std::memcpy(dst, src, static_cast<size_t>(n) * sizeof(float));
+            break;
+        case GGML_TYPE_F16:
+            ggml_cpu_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t *>(src), dst, n);
+            break;
+        case GGML_TYPE_BF16:
+            ggml_cpu_bf16_to_fp32(reinterpret_cast<const ggml_bf16_t *>(src), dst, n);
+            break;
+        default:
+            GGML_ABORT("KV Q8: unsupported src dtype");
+    }
+}
+
 static void * kv_mmap_alloc(size_t bytes, bool &huge_ok, const char *hp_mode) {
     huge_ok = false;
 #ifdef __linux__
@@ -142,7 +158,7 @@ gptoss_kv_cache::gptoss_kv_cache(
            gptoss_swa_type   swa_type,
     const layer_filter_cb & filter,
     const  layer_reuse_cb & reuse) :
-    model(model), hparams(model.hparams), type_k_src(type_k), type_v_src(type_v), v_trans(v_trans),
+    model(model), hparams(model.hparams), src_type_k(type_k), src_type_v(type_v), v_trans(v_trans),
     n_seq_max(n_seq_max), n_stream(unified ? 1 : n_seq_max), n_pad(n_pad), n_swa(n_swa), swa_type(swa_type) {
 
     GGML_ASSERT(kv_size % n_pad == 0);
@@ -2201,42 +2217,26 @@ void gptoss_kv_cache::append_token(int stream_idx, const void * k_src, const voi
     if (dtype_size == 1) {
         GGML_ASSERT(view.dtype_k == GPTOSS_KV_Q8_ROWROW && view.dtype_v == GPTOSS_KV_Q8_ROWROW);
 
-        GGML_ASSERT(type_k_src == GGML_TYPE_F16 || type_k_src == GGML_TYPE_F32);
-        GGML_ASSERT(type_v_src == GGML_TYPE_F16 || type_v_src == GGML_TYPE_F32);
+        static thread_local std::vector<float> k_tmp;
+        static thread_local std::vector<float> v_tmp;
+
+        k_tmp.resize(view.head_dim);
+        v_tmp.resize(view.head_dim);
 
         const uint8_t * k_bytes = static_cast<const uint8_t *>(k_src);
         const uint8_t * v_bytes = static_cast<const uint8_t *>(v_src);
-        const size_t k_stride = ggml_type_size(type_k_src) * static_cast<size_t>(view.head_dim);
-        const size_t v_stride = ggml_type_size(type_v_src) * static_cast<size_t>(view.head_dim);
-
-        std::vector<float> k_tmp(type_k_src == GGML_TYPE_F16 ? view.head_dim : 0);
-        std::vector<float> v_tmp(type_v_src == GGML_TYPE_F16 ? view.head_dim : 0);
+        const size_t k_stride = ggml_type_size(src_type_k) * static_cast<size_t>(view.head_dim);
+        const size_t v_stride = ggml_type_size(src_type_v) * static_cast<size_t>(view.head_dim);
 
         for (int h = 0; h < view.n_heads_kv; ++h) {
-            const size_t head_off = static_cast<size_t>(h) * view.stride_head_bytes;
+            const size_t head_off_q8 = static_cast<size_t>(h) * view.stride_head_bytes;
+            const size_t k_src_off = static_cast<size_t>(h) * k_stride;
+            const size_t v_src_off = static_cast<size_t>(h) * v_stride;
 
-            const void * k_head_src = k_bytes + static_cast<size_t>(h) * k_stride;
-            const void * v_head_src = v_bytes + static_cast<size_t>(h) * v_stride;
+            load_row_to_f32(k_bytes + k_src_off, src_type_k, k_tmp.data(), view.head_dim);
+            load_row_to_f32(v_bytes + v_src_off, src_type_v, v_tmp.data(), view.head_dim);
 
-            const float * k_row = nullptr;
-            if (type_k_src == GGML_TYPE_F16) {
-                ggml_cpu_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t *>(k_head_src), k_tmp.data(), view.head_dim);
-                k_row = k_tmp.data();
-            } else {
-                GGML_ASSERT(type_k_src == GGML_TYPE_F32);
-                k_row = reinterpret_cast<const float *>(k_head_src);
-            }
-
-            const float * v_row = nullptr;
-            if (type_v_src == GGML_TYPE_F16) {
-                ggml_cpu_fp16_to_fp32(reinterpret_cast<const ggml_fp16_t *>(v_head_src), v_tmp.data(), view.head_dim);
-                v_row = v_tmp.data();
-            } else {
-                GGML_ASSERT(type_v_src == GGML_TYPE_F32);
-                v_row = reinterpret_cast<const float *>(v_head_src);
-            }
-
-            kv_append_q8_rowrow(k_row, v_row, token_ptr, head_off, view.head_dim);
+            kv_append_q8_rowrow(k_tmp.data(), v_tmp.data(), token_ptr, head_off_q8, view.head_dim);
         }
     } else {
         for (int h = 0; h < view.n_heads_kv; ++h) {
