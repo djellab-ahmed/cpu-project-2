@@ -2353,6 +2353,13 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
                 const int n_head = p ? p->n_head : 1;
                 n_tasks = MIN(n_threads, n_head);
             } break;
+        case GGML_OP_QKV_MV_ROPE:
+            {
+                const struct ggml_qkv_mv_rope_params * p =
+                    (const struct ggml_qkv_mv_rope_params *) node->op_params;
+                const int n_head = p ? p->n_head : 1;
+                n_tasks = MIN(n_threads, n_head);
+            } break;
         case GGML_OP_CLAMP:
             {
                 n_tasks = 1; //TODO
