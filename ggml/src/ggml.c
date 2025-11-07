@@ -969,6 +969,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SOFT_MAX",
     "SOFT_MAX_BACK",
     "ROPE",
+    "QKV_MV_ROPE",
     "ROPE_BACK",
     "CLAMP",
     "CONV_TRANSPOSE_1D",
@@ -1020,7 +1021,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "GLU",
 };
 
-static_assert(GGML_OP_COUNT == 91, "GGML_OP_COUNT != 91");
+static_assert(GGML_OP_COUNT == 92, "GGML_OP_COUNT != 92"); // keep GGML_OP_NAME in sync
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1074,6 +1075,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "soft_max(x)",
     "soft_max_back(x)",
     "rope(x)",
+    "qkv_mv_rope(x)",
     "rope_back(x)",
     "clamp(x)",
     "conv_transpose_1d(x)",
@@ -1125,7 +1127,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "glu(x)",
 };
 
-static_assert(GGML_OP_COUNT == 91, "GGML_OP_COUNT != 91");
+static_assert(GGML_OP_COUNT == 92, "GGML_OP_COUNT != 92"); // keep GGML_OP_SYMBOL in sync
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -3979,6 +3981,29 @@ struct ggml_tensor * ggml_soft_max_ext_back_inplace(
 }
 
 // ggml_rope
+
+struct ggml_tensor * ggml_qkv_mv_rope(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * w_qkv,
+        struct ggml_qkv_mv_rope_params params) {
+    GGML_ASSERT(x->ne[1] == 1);
+
+    const int64_t d_out = (int64_t) params.n_head * (int64_t) params.head_dim;
+
+    GGML_ASSERT(w_qkv->ne[0] == x->ne[0]);
+    GGML_ASSERT(w_qkv->ne[1] == 3 * d_out);
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 3 * d_out, 1);
+
+    result->op     = GGML_OP_QKV_MV_ROPE;
+    result->src[0] = x;
+    result->src[1] = w_qkv;
+
+    ggml_set_op_params(result, &params, sizeof(params));
+
+    return result;
+}
 
 static struct ggml_tensor * ggml_rope_impl(
         struct ggml_context * ctx,

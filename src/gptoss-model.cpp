@@ -6,6 +6,7 @@
 #include "gptoss-cparams.h"
 #include "gptoss-model-loader.h"
 
+#include "ggml-cpu.h"
 #include "gptoss-kv-cache.h"
 #include "gptoss-kv-cache-iswa.h"
 #include "gptoss-memory-hybrid.h"
@@ -18,12 +19,214 @@
 #include <cmath>
 #include <cfloat>
 #include <cstring>
+#include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <functional>
 #include <map>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
+
+namespace {
+
+bool fuse_qkv_rope_enabled() {
+    static int cached = -1;
+    if (cached == -1) {
+        const char * env = std::getenv("GPTOSS_FUSE_QKV_ROPE");
+        cached = (env == nullptr) ? 1 : (std::atoi(env) != 0);
+    }
+    return cached != 0;
+}
+
+struct fused_qkv_result {
+    bool ok = false;
+    ggml_tensor * qkv = nullptr;
+    ggml_tensor * q = nullptr;
+    ggml_tensor * k = nullptr;
+    ggml_tensor * v = nullptr;
+};
+
+bool can_use_fused_qkv(const llm_graph_context & ctx,
+                       const gptoss_model & model,
+                       int il,
+                       ggml_tensor * rope_factors,
+                       ggml_tensor * cur,
+                       int64_t n_head,
+                       int64_t n_head_kv,
+                       int64_t head_dim,
+                       int64_t rotary_dim,
+                       int64_t n_tokens,
+                       bool apply_rope) {
+    if (!fuse_qkv_rope_enabled()) {
+        return false;
+    }
+
+    if (!apply_rope) {
+        return false;
+    }
+
+    if (ctx.ubatch.n_tokens != 1 || ctx.ubatch.n_seq_tokens != 1 || ctx.ubatch.n_seqs != 1) {
+        return false;
+    }
+
+    if (ctx.ubatch.pos == nullptr) {
+        return false;
+    }
+
+    if (ctx.loras != nullptr && !ctx.loras->empty()) {
+        return false;
+    }
+
+    if (rope_factors != nullptr) {
+        return false;
+    }
+
+    if ((ctx.rope_type & (GGML_ROPE_TYPE_MROPE | GGML_ROPE_TYPE_VISION)) != 0) {
+        return false;
+    }
+
+    ggml_tensor * wqkv = model.layers[il].wqkv;
+    if (wqkv == nullptr) {
+        return false;
+    }
+
+    if (model.layers[il].wq_scale ||
+        model.layers[il].wk_scale ||
+        model.layers[il].wv_scale) {
+        return false;
+    }
+
+    if (model.layers[il].bqkv != nullptr ||
+        model.layers[il].bq   != nullptr ||
+        model.layers[il].bk   != nullptr ||
+        model.layers[il].bv   != nullptr) {
+        return false;
+    }
+
+    if (n_tokens != 1) {
+        return false;
+    }
+
+    if (cur->ne[1] != 1) {
+        return false;
+    }
+
+    if (n_head <= 0 || head_dim <= 0) {
+        return false;
+    }
+
+    if (n_head != n_head_kv) {
+        return false;
+    }
+
+    if (rotary_dim < 0 || rotary_dim > head_dim) {
+        return false;
+    }
+
+    const int64_t expected_w = 3 * n_head * head_dim;
+
+    if (wqkv->ne[0] != cur->ne[0] || wqkv->ne[1] != expected_w) {
+        return false;
+    }
+
+    if (cur->type != GGML_TYPE_F32) {
+        return false;
+    }
+
+    return true;
+}
+
+fused_qkv_result build_fused_qkv(llm_graph_context & ctx,
+                                 const gptoss_model & model,
+                                 ggml_tensor * cur,
+                                 int il,
+                                 int64_t n_head,
+                                 int64_t head_dim,
+                                 int64_t rotary_dim,
+                                 int64_t n_tokens) {
+    fused_qkv_result res;
+
+    ggml_qkv_mv_rope_params params{};
+    params.n_head         = (int32_t) n_head;
+    params.head_dim       = (int32_t) head_dim;
+    params.rotary_dim     = (int32_t) rotary_dim;
+    params.rope_type      = ctx.rope_type;
+    params.pos            = ctx.ubatch.pos ? ctx.ubatch.pos[0] : 0;
+    params.rope_freq_base = ctx.freq_base;
+    params.rope_freq_scale= ctx.freq_scale;
+
+    ggml_tensor * qkv = ggml_qkv_mv_rope(ctx.ctx0, cur, model.layers[il].wqkv, params);
+
+    const int64_t d_out    = head_dim * n_head;
+    const size_t  elem_sz  = ggml_element_size(qkv);
+
+    ggml_tensor * q_flat = ggml_view_1d(ctx.ctx0, qkv, d_out, 0);
+    ggml_tensor * k_flat = ggml_view_1d(ctx.ctx0, qkv, d_out, d_out * elem_sz);
+    ggml_tensor * v_flat = ggml_view_1d(ctx.ctx0, qkv, d_out, 2 * d_out * elem_sz);
+
+    res.qkv = qkv;
+    res.q   = ggml_reshape_3d(ctx.ctx0, q_flat, head_dim, n_head, n_tokens);
+    res.k   = ggml_reshape_3d(ctx.ctx0, k_flat, head_dim, n_head, n_tokens);
+    res.v   = ggml_reshape_3d(ctx.ctx0, v_flat, head_dim, n_head, n_tokens);
+    res.ok  = true;
+
+    return res;
+}
+
+fused_qkv_result try_build_fused_qkv(llm_graph_context & ctx,
+                                     const gptoss_model & model,
+                                     ggml_tensor * cur,
+                                     int il,
+                                     ggml_tensor * rope_factors,
+                                     int64_t n_head,
+                                     int64_t n_head_kv,
+                                     int64_t head_dim,
+                                     int64_t rotary_dim,
+                                     int64_t n_tokens,
+                                     bool apply_rope) {
+    if (!can_use_fused_qkv(ctx, model, il, rope_factors, cur,
+                           n_head, n_head_kv, head_dim, rotary_dim, n_tokens, apply_rope)) {
+        return {};
+    }
+
+    return build_fused_qkv(ctx, model, cur, il, n_head, head_dim, rotary_dim, n_tokens);
+}
+
+bool maybe_use_fused_qkv(llm_graph_context & ctx,
+                         const gptoss_model & model,
+                         int il,
+                         ggml_tensor * rope_factors,
+                         ggml_tensor * cur,
+                         int64_t n_head,
+                         int64_t n_head_kv,
+                         int64_t head_dim,
+                         int64_t rotary_dim,
+                         int64_t n_tokens,
+                         bool apply_rope,
+                         ggml_tensor *& Qcur,
+                         ggml_tensor *& Kcur,
+                         ggml_tensor *& Vcur) {
+    fused_qkv_result fused = try_build_fused_qkv(ctx, model, cur, il, rope_factors,
+                                                 n_head, n_head_kv, head_dim, rotary_dim,
+                                                 n_tokens, apply_rope);
+    if (!fused.ok) {
+        return false;
+    }
+
+    Qcur = fused.q;
+    Kcur = fused.k;
+    Vcur = fused.v;
+
+    const char * debug_env = std::getenv("GPTOSS_FUSE_QKV_ROPE_DEBUG");
+    if (debug_env && std::atoi(debug_env) != 0) {
+        std::fprintf(stderr, "[graph] layer %d: using GGML_OP_QKV_MV_ROPE\n", il);
+    }
+
+    return true;
+}
+
+} // namespace
 
 const char * llm_type_name(llm_type type) {
     switch (type) {
@@ -6265,6 +6468,8 @@ bool gptoss_model::load_tensors(gptoss_model_loader & ml) {
         }
     }
 
+    build_fused_qkv_weights();
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -6272,6 +6477,117 @@ bool gptoss_model::load_tensors(gptoss_model_loader & ml) {
     }
 
     return true;
+}
+
+void gptoss_model::build_fused_qkv_weights() {
+    const int n_layer = hparams.n_layer;
+    std::vector<std::pair<int, ggml_tensor *>> fused_layers;
+    fused_layers.reserve(n_layer);
+
+    for (int il = 0; il < n_layer; ++il) {
+        auto & layer = layers[il];
+
+        if (layer.wqkv != nullptr) {
+            continue;
+        }
+
+        if (layer.wq == nullptr || layer.wk == nullptr || layer.wv == nullptr) {
+            continue;
+        }
+
+        if (layer.wq->type != layer.wk->type || layer.wq->type != layer.wv->type) {
+            continue;
+        }
+
+        const int64_t d_model = layer.wq->ne[0];
+        const int64_t q_cols  = layer.wq->ne[1];
+        const int64_t k_cols  = layer.wk->ne[1];
+        const int64_t v_cols  = layer.wv->ne[1];
+
+        if (layer.wk->ne[0] != d_model || layer.wv->ne[0] != d_model) {
+            continue;
+        }
+
+        if (q_cols != k_cols || q_cols != v_cols) {
+            continue;
+        }
+
+        if (q_cols == 0) {
+            continue;
+        }
+
+        fused_layers.emplace_back(il, nullptr);
+    }
+
+    if (fused_layers.empty()) {
+        return;
+    }
+
+    ggml_init_params ctx_params = {
+        /*.mem_size   =*/ ggml_tensor_overhead() * fused_layers.size(),
+        /*.mem_buffer =*/ nullptr,
+        /*.no_alloc   =*/ true,
+    };
+
+    ggml_context_ptr fused_ctx { ggml_init(ctx_params) };
+    if (!fused_ctx) {
+        throw std::runtime_error("failed to create fused qkv ggml context");
+    }
+
+    const auto tn = LLM_TN(arch);
+
+    for (auto & entry : fused_layers) {
+        const int il = entry.first;
+        auto & layer = layers[il];
+
+        const int64_t d_model = layer.wq->ne[0];
+        const int64_t cols    = layer.wq->ne[1];
+
+        ggml_tensor * wqkv = ggml_new_tensor_2d(fused_ctx.get(), layer.wq->type, d_model, 3 * cols);
+        std::string name = tn(LLM_TENSOR_ATTN_QKV, "weight", il).str() + std::string(".fused");
+        ggml_set_name(wqkv, name.c_str());
+        entry.second = wqkv;
+        layer.wqkv = wqkv;
+    }
+
+    ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
+    if (!cpu_buft) {
+        throw std::runtime_error("no CPU buffer type available for fused qkv weights");
+    }
+
+    ggml_backend_buffer_ptr buf { ggml_backend_alloc_ctx_tensors_from_buft(fused_ctx.get(), cpu_buft) };
+    if (!buf) {
+        throw std::runtime_error("unable to allocate fused qkv buffer");
+    }
+    ggml_backend_buffer_set_usage(buf.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+    std::vector<uint8_t> tmp;
+
+    for (const auto & entry : fused_layers) {
+        const int il = entry.first;
+        auto & layer = layers[il];
+        ggml_tensor * dst = layer.wqkv;
+
+        const size_t q_bytes = ggml_nbytes(layer.wq);
+        const size_t k_bytes = ggml_nbytes(layer.wk);
+        const size_t v_bytes = ggml_nbytes(layer.wv);
+        const size_t max_bytes = std::max({q_bytes, k_bytes, v_bytes});
+
+        tmp.resize(max_bytes);
+
+        ggml_backend_tensor_get(layer.wq, tmp.data(), 0, q_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), 0, q_bytes);
+
+        ggml_backend_tensor_get(layer.wk, tmp.data(), 0, k_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), q_bytes, k_bytes);
+
+        ggml_backend_tensor_get(layer.wv, tmp.data(), 0, v_bytes);
+        ggml_backend_tensor_set(dst, tmp.data(), q_bytes + k_bytes, v_bytes);
+
+        tensors_by_name.emplace_back(ggml_get_name(dst), dst);
+    }
+
+    pimpl->ctxs_bufs.emplace_back(std::move(fused_ctx), std::move(buf));
 }
 
 std::string gptoss_model::arch_name() const {
@@ -6624,47 +6940,59 @@ struct llm_build_gptoss : public llm_graph_context {
                 // rope freq factors for gptoss3; may return nullptr for gptoss2 and other models
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
-                // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, rope_factors, cur,
+                                                 n_head, n_head_kv, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
                     cb(Kcur, "Kcur", il);
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
+
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
                 }
 
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                if (fused) {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 if (hparams.use_kq_norm) {
                     // Gptoss4TextL2Norm
@@ -6984,47 +7312,59 @@ struct llm_build_deci : public llm_graph_context {
                 // rope freq factors for gptoss3; may return nullptr for gptoss2 and other models
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
-                // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, rope_factors, cur,
+                                                 n_head, n_head_kv, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
                     cb(Kcur, "Kcur", il);
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
+
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
                 }
 
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                if (fused) {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 cur = build_attn(inp_attn,
                         model.layers[il].wo, model.layers[il].bo,
@@ -7479,47 +7819,62 @@ struct llm_build_grok : public llm_graph_context {
 
             // self-attention
             {
-                // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                const int64_t n_head_cur    = hparams.n_head(il);
+                const int64_t n_head_kv_cur = hparams.n_head_kv(il);
+
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, nullptr, cur,
+                                                 n_head_cur, n_head_kv_cur, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
                     cb(Kcur, "Kcur", il);
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
+
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
                 }
 
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                if (fused) {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 cur = build_attn(inp_attn,
                         model.layers[il].wo, model.layers[il].bo,
@@ -9229,46 +9584,61 @@ struct llm_build_qwen2moe : public llm_graph_context {
             // self_attention
             {
                 // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, nullptr, cur,
+                                                 n_head, n_head_kv, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
                     cb(Kcur, "Kcur", il);
-                }
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
 
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
+                    cb(Vcur, "Vcur", il);
+                } else {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 cur = build_attn(inp_attn,
                         model.layers[il].wo, model.layers[il].bo,
@@ -13452,46 +13822,61 @@ struct llm_build_deepseek : public llm_graph_context {
                 ggml_tensor * rope_factors = model.get_rope_factors(cparams, il);
 
                 // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, rope_factors, cur,
+                                                 n_head, n_head_kv, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
                     cb(Kcur, "Kcur", il);
-                }
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
 
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, rope_factors,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
+                    cb(Vcur, "Vcur", il);
+                } else {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, rope_factors,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 cur = build_attn(inp_attn,
                         model.layers[il].wo, model.layers[il].bo,
@@ -13870,57 +14255,68 @@ struct llm_build_bitnet : public llm_graph_context {
             // self-attention
             {
                 // compute Q and K and RoPE them
-                ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
-                if (model.layers[il].wq_scale) {
-                    Qcur = ggml_mul(ctx0, Qcur, model.layers[il].wq_scale);
-                }
-                cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                ggml_tensor * Qcur = nullptr;
+                ggml_tensor * Kcur = nullptr;
+                ggml_tensor * Vcur = nullptr;
+
+                bool fused = maybe_use_fused_qkv(*this, model, il, nullptr, cur,
+                                                 n_head, n_head_kv, n_embd_head, n_rot,
+                                                 n_tokens, /*apply_rope=*/true,
+                                                 Qcur, Kcur, Vcur);
+
+                if (!fused) {
+                    Qcur = build_lora_mm(model.layers[il].wq, cur);
+                    if (model.layers[il].wq_scale) {
+                        Qcur = ggml_mul(ctx0, Qcur, model.layers[il].wq_scale);
+                    }
                     cb(Qcur, "Qcur", il);
-                }
+                    if (model.layers[il].bq) {
+                        Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                        cb(Qcur, "Qcur", il);
+                    }
 
-                // B1.K
-                ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
-                if (model.layers[il].wk_scale) {
-                    Kcur = ggml_mul(ctx0, Kcur, model.layers[il].wk_scale);
-                }
-                cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    // B1.K
+                    Kcur = build_lora_mm(model.layers[il].wk, cur);
+                    if (model.layers[il].wk_scale) {
+                        Kcur = ggml_mul(ctx0, Kcur, model.layers[il].wk_scale);
+                    }
                     cb(Kcur, "Kcur", il);
-                }
+                    if (model.layers[il].bk) {
+                        Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                        cb(Kcur, "Kcur", il);
+                    }
 
-                // B1.V
-                ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
-                if (model.layers[il].wv_scale) {
-                    Vcur = ggml_mul(ctx0, Vcur, model.layers[il].wv_scale);
-                }
-                cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    // B1.V
+                    Vcur = build_lora_mm(model.layers[il].wv, cur);
+                    if (model.layers[il].wv_scale) {
+                        Vcur = ggml_mul(ctx0, Vcur, model.layers[il].wv_scale);
+                    }
+                    cb(Vcur, "Vcur", il);
+                    if (model.layers[il].bv) {
+                        Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                        cb(Vcur, "Vcur", il);
+                    }
+
+                    Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                    Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                    Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
+
+                    Qcur = ggml_rope_ext(
+                            ctx0, Qcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+
+                    Kcur = ggml_rope_ext(
+                            ctx0, Kcur, inp_pos, nullptr,
+                            n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                            ext_factor, attn_factor, beta_fast, beta_slow
+                            );
+                } else {
+                    cb(Qcur, "Qcur", il);
+                    cb(Kcur, "Kcur", il);
                     cb(Vcur, "Vcur", il);
                 }
-
-                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
-                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
-                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
-
-                Qcur = ggml_rope_ext(
-                        ctx0, Qcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                Kcur = ggml_rope_ext(
-                        ctx0, Kcur, inp_pos, nullptr,
-                        n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
-                        ext_factor, attn_factor, beta_fast, beta_slow
-                        );
-
-                cb(Qcur, "Qcur", il);
-                cb(Kcur, "Kcur", il);
-                cb(Vcur, "Vcur", il);
 
                 cur = build_attn(inp_attn,
                         NULL, NULL,
